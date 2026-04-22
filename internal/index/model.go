@@ -19,9 +19,9 @@ type Posting struct {
 }
 
 type SearchResult struct {
-	Chunk    Chunk
-	Document Document
-	Score    int
+	Chunk    Chunk    `json:"chunk"`
+	Document Document `json:"document"`
+	Score    int      `json:"score"`
 }
 
 type InvertedIndex struct {

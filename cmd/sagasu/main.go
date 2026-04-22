@@ -42,18 +42,27 @@ func main() {
 
 	var extFilters []string
 	var limit int
+	var jsonOutput bool
+	var countOnly bool
 
 	searchCmd := &cobra.Command{
 		Use:   "search [query]",
 		Short: "Search indexed content",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.RunSearch(args[0], indexPath, extFilters, limit)
+			return app.RunSearch(args[0], indexPath, app.SearchOptions{
+				ExtFilters: extFilters,
+				Limit:      limit,
+				JSON:       jsonOutput,
+				Count:      countOnly,
+			})
 		},
 	}
 
 	searchCmd.Flags().StringSliceVar(&extFilters, "ext", nil, "filter by file extension")
 	searchCmd.Flags().IntVar(&limit, "limit", defaultLimit, "maximum number of results")
+	searchCmd.Flags().BoolVar(&jsonOutput, "json", false, "output search results as JSON")
+	searchCmd.Flags().BoolVar(&countOnly, "count", false, "output only the number of matches")
 
 	rootCmd.AddCommand(indexCmd, searchCmd)
 
