@@ -67,7 +67,17 @@ func main() {
 	searchCmd.Flags().BoolVar(&countOnly, "count", false, "output only the number of matches")
 	searchCmd.Flags().IntVarP(&contextLines, "context", "C", 0, "show N lines of context around each match")
 
-	rootCmd.AddCommand(indexCmd, searchCmd)
+	statusCmd := &cobra.Command{
+		Use:     "status",
+		Short:   "Show index metadata and stats",
+		Aliases: []string{"info"},
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.RunStatus(indexPath)
+		},
+	}
+
+	rootCmd.AddCommand(indexCmd, searchCmd, statusCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		_, err = fmt.Fprintln(os.Stderr, err)

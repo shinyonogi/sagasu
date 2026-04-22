@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -48,6 +49,26 @@ func (p Printer) PrintIndexSummary(summary IndexSummary) {
 	fmt.Printf("%s%s\n", p.label("  deleted "), p.metric(summary.Deleted, "files"))
 	fmt.Printf("%s%s\n", p.label("  chunks  "), p.metric(summary.Chunks, "indexed"))
 	fmt.Printf("%s%s\n", p.label("  terms   "), p.metric(summary.Terms, "indexed"))
+}
+
+func (p Printer) PrintIndexStats(stats index.IndexStats) {
+	fmt.Println(p.title("STATUS"))
+	fmt.Printf("%s%s\n", p.label("  database"), p.value(stats.Path))
+	fmt.Printf("%s%s\n", p.label("  size    "), p.value(formatBytes(stats.SizeBytes)))
+	fmt.Printf("%s%s\n", p.label("  docs    "), p.metric(stats.Documents, "documents"))
+	fmt.Printf("%s%s\n", p.label("  chunks  "), p.metric(stats.Chunks, "chunks"))
+	fmt.Printf("%s%s\n", p.label("  terms   "), p.metric(stats.Terms, "postings"))
+	if stats.LastModified > 0 {
+		fmt.Printf("%s%s\n", p.label("  updated "), p.value(time.Unix(stats.LastModified, 0).Local().Format(time.RFC3339)))
+	}
+	if len(stats.Exts) == 0 {
+		return
+	}
+
+	fmt.Printf("%s%s\n", p.label("  exts    "), p.muted(""))
+	for _, ext := range stats.Exts {
+		fmt.Printf("    %s %s\n", p.value("."+ext.Ext), p.muted(fmt.Sprintf("(%d)", ext.Count)))
+	}
 }
 
 func (p Printer) PrintSearchResults(query string, extFilters []string, contextLines int, results []index.SearchResult) {
@@ -283,4 +304,18 @@ func colorResetIf(enabled bool) string {
 		return colorReset
 	}
 	return ""
+}
+
+func formatBytes(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	value := float64(size)
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	return fmt.Sprintf("%.1f %s", value, units[unit])
 }

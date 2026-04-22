@@ -8,6 +8,7 @@ import (
 	indexdb "github.com/shinyonogi/sagasu/internal/index/sqlc"
 	"github.com/shinyonogi/sagasu/internal/tokenizer"
 	_ "modernc.org/sqlite"
+	"os"
 	"strings"
 )
 
@@ -89,6 +90,60 @@ func LoadDocuments(path string) (map[string]Document, error) {
 	}
 
 	return loaded, nil
+}
+
+func LoadStats(path string) (IndexStats, error) {
+	db, err := openDB(path)
+	if err != nil {
+		return IndexStats{}, err
+	}
+	defer db.Close()
+
+	if err := migrate(db); err != nil {
+		return IndexStats{}, err
+	}
+
+	stats := IndexStats{Path: path}
+
+	if info, err := os.Stat(path); err == nil {
+		stats.SizeBytes = info.Size()
+	}
+
+	row := db.QueryRow(`
+SELECT
+  (SELECT COUNT(*) FROM documents),
+  (SELECT COUNT(*) FROM chunks),
+  (SELECT COUNT(*) FROM postings),
+  COALESCE((SELECT MAX(modified) FROM documents), 0)
+`)
+	if err := row.Scan(&stats.Documents, &stats.Chunks, &stats.Terms, &stats.LastModified); err != nil {
+		return IndexStats{}, fmt.Errorf("query index stats: %w", err)
+	}
+
+	rows, err := db.Query(`
+SELECT ext, COUNT(*) AS count
+FROM documents
+GROUP BY ext
+ORDER BY count DESC, ext ASC
+`)
+	if err != nil {
+		return IndexStats{}, fmt.Errorf("query extension stats: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var extStat ExtStat
+		if err := rows.Scan(&extStat.Ext, &extStat.Count); err != nil {
+			return IndexStats{}, fmt.Errorf("scan extension stats: %w", err)
+		}
+		stats.Exts = append(stats.Exts, extStat)
+	}
+
+	if err := rows.Err(); err != nil {
+		return IndexStats{}, fmt.Errorf("iterate extension stats: %w", err)
+	}
+
+	return stats, nil
 }
 
 func ApplyChanges(path string, changed *InvertedIndex, deletedPaths []string) error {

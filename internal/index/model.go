@@ -24,6 +24,21 @@ type SearchResult struct {
 	Score    int      `json:"score"`
 }
 
+type ExtStat struct {
+	Ext   string
+	Count int
+}
+
+type IndexStats struct {
+	Path         string
+	SizeBytes    int64
+	Documents    int
+	Chunks       int
+	Terms        int
+	LastModified int64
+	Exts         []ExtStat
+}
+
 type InvertedIndex struct {
 	Documents map[string]Document  `json:"documents"`
 	Chunks    map[string]Chunk     `json:"chunks"`
