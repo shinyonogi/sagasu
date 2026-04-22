@@ -204,6 +204,60 @@ func TestSearchStoredFindsFilenameMatches(t *testing.T) {
 	}
 }
 
+func TestSaveEmbeddingsAndLoadEmbeddings(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "index.sqlite")
+	goFile := filepath.Join(root, "main.go")
+	mustWriteIndexFile(t, goFile, "package main\nfunc main() { hello() }\n")
+
+	builder := NewBuilder()
+	changed := NewInvertedIndex()
+	if err := builder.AddFileWithModified(changed, goFile, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatalf("AddFileWithModified() error = %v", err)
+	}
+	if err := ApplyChanges(dbPath, changed, nil); err != nil {
+		t.Fatalf("ApplyChanges() error = %v", err)
+	}
+
+	var chunkKey string
+	for key := range changed.Chunks {
+		chunkKey = key
+		break
+	}
+	if chunkKey == "" {
+		t.Fatalf("chunkKey is empty")
+	}
+
+	embeddings := []Embedding{
+		{
+			ChunkKey:   chunkKey,
+			Model:      "test-model",
+			Dimensions: 3,
+			Vector:     []byte{1, 2, 3},
+			UpdatedAt:  1_700_000_123,
+		},
+	}
+	if err := SaveEmbeddings(dbPath, embeddings); err != nil {
+		t.Fatalf("SaveEmbeddings() error = %v", err)
+	}
+
+	loaded, err := LoadEmbeddings(dbPath, "test-model")
+	if err != nil {
+		t.Fatalf("LoadEmbeddings() error = %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("len(loaded) = %d, want 1", len(loaded))
+	}
+	if loaded[0].ChunkKey != chunkKey {
+		t.Fatalf("loaded[0].ChunkKey = %q, want %q", loaded[0].ChunkKey, chunkKey)
+	}
+	if loaded[0].Dimensions != 3 {
+		t.Fatalf("loaded[0].Dimensions = %d, want 3", loaded[0].Dimensions)
+	}
+}
+
 func mustWriteIndexFile(t *testing.T, path string, content string) {
 	t.Helper()
 

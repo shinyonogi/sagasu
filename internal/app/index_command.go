@@ -1,17 +1,25 @@
 package app
 
 import (
+	"context"
 	"github.com/shinyonogi/sagasu/internal/config"
 	"github.com/shinyonogi/sagasu/internal/crawler"
+	"github.com/shinyonogi/sagasu/internal/embedding"
 	"github.com/shinyonogi/sagasu/internal/index"
 	"github.com/shinyonogi/sagasu/internal/output"
 	"runtime"
+	"sort"
 	"sync"
+	"time"
 )
 
 type IndexOptions struct {
-	ConfigPath string
-	JSON       bool
+	ConfigPath        string
+	JSON              bool
+	EnableSemantic    bool
+	EmbeddingProvider string
+	EmbeddingModel    string
+	OllamaURL         string
 }
 
 func RunIndex(roots []string, indexPath string, options IndexOptions) error {
@@ -80,6 +88,12 @@ func runIndex(roots []string, indexPath string, forceRebuild bool, options Index
 		return err
 	}
 
+	if options.EnableSemantic {
+		if err := indexChangedEmbeddings(indexPath, changed, options); err != nil {
+			return err
+		}
+	}
+
 	summary := output.IndexSummary{
 		IndexPath: indexPath,
 		Scanned:   len(files),
@@ -96,6 +110,76 @@ func runIndex(roots []string, indexPath string, forceRebuild bool, options Index
 	printer.PrintIndexSummary(summary)
 
 	return nil
+}
+
+func indexChangedEmbeddings(indexPath string, changed *index.InvertedIndex, options IndexOptions) error {
+	if len(changed.Chunks) == 0 {
+		return nil
+	}
+
+	embeddingConfig := normalizeEmbeddingOptions(options.EmbeddingProvider, options.EmbeddingModel, options.OllamaURL)
+	provider, err := embedding.NewProvider(embedding.Config{
+		Provider: embeddingConfig.Provider,
+		Model:    embeddingConfig.Model,
+		BaseURL:  embeddingConfig.BaseURL,
+	})
+	if err != nil {
+		return err
+	}
+
+	chunks := make([]index.Chunk, 0, len(changed.Chunks))
+	for _, chunk := range changed.Chunks {
+		chunks = append(chunks, chunk)
+	}
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].Key < chunks[j].Key
+	})
+
+	existingEmbeddings, err := index.LoadEmbeddings(indexPath, embeddingConfig.Model)
+	if err != nil {
+		return err
+	}
+	existingKeys := make(map[string]struct{}, len(existingEmbeddings))
+	for _, item := range existingEmbeddings {
+		existingKeys[item.ChunkKey] = struct{}{}
+	}
+
+	pendingChunks := make([]index.Chunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		if _, ok := existingKeys[chunk.Key]; ok {
+			continue
+		}
+		pendingChunks = append(pendingChunks, chunk)
+	}
+	if len(pendingChunks) == 0 {
+		return nil
+	}
+
+	texts := make([]string, 0, len(pendingChunks))
+	for _, chunk := range pendingChunks {
+		texts = append(texts, chunk.Content)
+	}
+
+	vectors, err := provider.Embed(context.Background(), texts)
+	if err != nil {
+		return err
+	}
+	if len(vectors) != len(pendingChunks) {
+		return nil
+	}
+
+	embeddingsToSave := make([]index.Embedding, 0, len(pendingChunks))
+	for i, vector := range vectors {
+		embeddingsToSave = append(embeddingsToSave, index.Embedding{
+			ChunkKey:   pendingChunks[i].Key,
+			Model:      embeddingConfig.Model,
+			Dimensions: len(vector),
+			Vector:     index.EncodeFloat32Vector(vector),
+			UpdatedAt:  time.Now().Unix(),
+		})
+	}
+
+	return index.SaveEmbeddings(indexPath, embeddingsToSave)
 }
 
 func isUnchanged(file crawler.FileEntry, existingDocuments map[string]index.Document) bool {

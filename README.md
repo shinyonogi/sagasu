@@ -33,6 +33,7 @@ sagasu --help
 - SQLite-backed local index with managed global storage
 - Incremental reindexing based on file modification time
 - Search by token, phrase, and extension filter
+- Optional local semantic search via Ollama embeddings
 - Context lines around matches
 - Human-friendly CLI output
 - Machine-readable JSON and count modes
@@ -73,6 +74,18 @@ Rebuild the index from scratch:
 
 ```bash
 sagasu rebuild /path/to/repo
+```
+
+Build semantic embeddings with local Ollama:
+
+```bash
+sagasu index /path/to/repo --semantic
+```
+
+Use a different local embedding model:
+
+```bash
+sagasu index /path/to/repo --semantic --embedding-model all-minilm
 ```
 
 ### Search
@@ -125,6 +138,40 @@ sagasu search sqlc --files-with-matches
 ```
 
 `--json`, `--count`, `--path-only`, and `--files-with-matches` are mutually exclusive.
+
+### Semantic Search
+
+Semantic search is optional and uses a local Ollama server.
+
+Start Ollama and pull an embedding model:
+
+```bash
+ollama pull embeddinggemma
+```
+
+Index the repository with semantic embeddings:
+
+```bash
+sagasu index /path/to/repo --semantic
+```
+
+Run hybrid search:
+
+```bash
+sagasu search "database connection pool" --semantic --root /path/to/repo
+```
+
+Tune semantic influence:
+
+```bash
+sagasu search "database connection pool" --semantic --semantic-weight 3.0 --root /path/to/repo
+```
+
+Use a custom Ollama endpoint:
+
+```bash
+sagasu search "storage layer" --semantic --ollama-url http://localhost:11434 --root /path/to/repo
+```
 
 ### Status
 
@@ -232,7 +279,8 @@ The crawler skips these directories by default:
 
 ## Limitations
 
-- Search ranking is still simple term-frequency scoring
+- Semantic search requires a local Ollama server and a pulled embedding model
+- Hybrid ranking is still heuristic and not yet benchmark-tuned
 - Phrase search is available, but query language is still minimal
 - No advanced boolean query syntax yet
 - No machine-readable output for `doctor` exit codes yet

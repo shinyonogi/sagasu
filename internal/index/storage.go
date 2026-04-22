@@ -137,6 +137,158 @@ ORDER BY count DESC, ext ASC
 	return stats, nil
 }
 
+func LoadEmbeddings(path string, model string) ([]Embedding, error) {
+	db, err := openDB(path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	if err := migrate(db); err != nil {
+		return nil, err
+	}
+
+	query := `
+SELECT chunk_key, model, dimensions, vector, updated_at
+FROM embeddings`
+	args := []any{}
+	if strings.TrimSpace(model) != "" {
+		query += ` WHERE model = ?`
+		args = append(args, model)
+	}
+	query += ` ORDER BY model ASC, chunk_key ASC`
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	embeddings := make([]Embedding, 0)
+	for rows.Next() {
+		var embedding Embedding
+		if err := rows.Scan(
+			&embedding.ChunkKey,
+			&embedding.Model,
+			&embedding.Dimensions,
+			&embedding.Vector,
+			&embedding.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan embeddings: %w", err)
+		}
+		embeddings = append(embeddings, embedding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate embeddings: %w", err)
+	}
+
+	return embeddings, nil
+}
+
+func LoadSearchResultsByChunkKeys(path string, chunkKeys []string, extFilters []string) ([]SearchResult, error) {
+	if len(chunkKeys) == 0 {
+		return nil, nil
+	}
+
+	db, err := openDB(path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	if err := migrate(db); err != nil {
+		return nil, err
+	}
+
+	normalizedExts := normalizeExtSlice(extFilters)
+	args := make([]any, 0, len(chunkKeys)+len(normalizedExts))
+	query := `
+SELECT
+  c.key,
+  c.document_path,
+  c.line_number,
+  c.content,
+  d.path,
+  d.ext,
+  d.modified
+FROM chunks c
+JOIN documents d ON d.path = c.document_path
+WHERE c.key IN (` + placeholderList(len(chunkKeys)) + `)`
+	for _, key := range chunkKeys {
+		args = append(args, key)
+	}
+	if len(normalizedExts) > 0 {
+		query += ` AND d.ext IN (` + placeholderList(len(normalizedExts)) + `)`
+		for _, ext := range normalizedExts {
+			args = append(args, ext)
+		}
+	}
+	query += ` ORDER BY d.path ASC, c.line_number ASC`
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query chunks by keys: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]SearchResult, 0, len(chunkKeys))
+	for rows.Next() {
+		var result SearchResult
+		if err := rows.Scan(
+			&result.Chunk.Key,
+			&result.Chunk.DocumentPath,
+			&result.Chunk.LineNumber,
+			&result.Chunk.Content,
+			&result.Document.Path,
+			&result.Document.Ext,
+			&result.Document.Modified,
+		); err != nil {
+			return nil, fmt.Errorf("scan chunk by key: %w", err)
+		}
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate chunks by keys: %w", err)
+	}
+
+	return results, nil
+}
+
+func SaveEmbeddings(path string, embeddings []Embedding) error {
+	db, err := openDB(path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := migrate(db); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	return transact(ctx, db, func(_ *indexdb.Queries, dbtx indexdb.DBTX) error {
+		for _, embedding := range embeddings {
+			if _, err := dbtx.ExecContext(
+				ctx,
+				`INSERT INTO embeddings(chunk_key, model, dimensions, vector, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(chunk_key, model) DO UPDATE SET
+  dimensions = excluded.dimensions,
+  vector = excluded.vector,
+  updated_at = excluded.updated_at`,
+				embedding.ChunkKey,
+				embedding.Model,
+				embedding.Dimensions,
+				embedding.Vector,
+				embedding.UpdatedAt,
+			); err != nil {
+				return fmt.Errorf("save embedding %q/%q: %w", embedding.ChunkKey, embedding.Model, err)
+			}
+		}
+		return nil
+	})
+}
+
 func Doctor(path string) (DoctorReport, error) {
 	documents, err := LoadDocuments(path)
 	if err != nil {
@@ -192,6 +344,9 @@ func ApplyChanges(path string, changed *InvertedIndex, deletedPaths []string) er
 	ctx := context.Background()
 	return transact(ctx, db, func(queries *indexdb.Queries, dbtx indexdb.DBTX) error {
 		for _, documentPath := range deletedPaths {
+			if err := deleteEmbeddingsByDocumentPath(ctx, dbtx, documentPath); err != nil {
+				return err
+			}
 			if err := deleteFTSByDocumentPath(ctx, dbtx, documentPath); err != nil {
 				return err
 			}
@@ -201,6 +356,9 @@ func ApplyChanges(path string, changed *InvertedIndex, deletedPaths []string) er
 		}
 
 		for _, document := range changed.Documents {
+			if err := deleteEmbeddingsByDocumentPath(ctx, dbtx, document.Path); err != nil {
+				return err
+			}
 			if err := deleteFTSByDocumentPath(ctx, dbtx, document.Path); err != nil {
 				return err
 			}
@@ -523,6 +681,13 @@ func insertFTSChunk(ctx context.Context, dbtx indexdb.DBTX, chunk Chunk) error {
 func deleteFTSByDocumentPath(ctx context.Context, dbtx indexdb.DBTX, documentPath string) error {
 	if _, err := dbtx.ExecContext(ctx, `DELETE FROM fts_chunks WHERE document_path = ?`, documentPath); err != nil {
 		return fmt.Errorf("delete fts rows for %q: %w", documentPath, err)
+	}
+	return nil
+}
+
+func deleteEmbeddingsByDocumentPath(ctx context.Context, dbtx indexdb.DBTX, documentPath string) error {
+	if _, err := dbtx.ExecContext(ctx, `DELETE FROM embeddings WHERE chunk_key IN (SELECT key FROM chunks WHERE document_path = ?)`, documentPath); err != nil {
+		return fmt.Errorf("delete embeddings for %q: %w", documentPath, err)
 	}
 	return nil
 }

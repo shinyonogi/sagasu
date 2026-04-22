@@ -20,5 +20,16 @@ CREATE TABLE IF NOT EXISTS postings (
   FOREIGN KEY(chunk_key) REFERENCES chunks(key) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS embeddings (
+  chunk_key TEXT NOT NULL,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  vector BLOB NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(chunk_key, model),
+  FOREIGN KEY(chunk_key) REFERENCES chunks(key) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_postings_term ON postings(term);
 CREATE INDEX IF NOT EXISTS idx_chunks_document_path ON chunks(document_path);
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);

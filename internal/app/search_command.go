@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/shinyonogi/sagasu/internal/embedding"
 	"github.com/shinyonogi/sagasu/internal/index"
 	"github.com/shinyonogi/sagasu/internal/output"
 	"os"
@@ -10,13 +11,18 @@ import (
 )
 
 type SearchOptions struct {
-	ExtFilters []string
-	Limit      int
-	JSON       bool
-	Count      bool
-	Context    int
-	PathOnly   bool
-	FilesOnly  bool
+	ExtFilters        []string
+	Limit             int
+	JSON              bool
+	Count             bool
+	Context           int
+	PathOnly          bool
+	FilesOnly         bool
+	EnableSemantic    bool
+	EmbeddingProvider string
+	EmbeddingModel    string
+	OllamaURL         string
+	SemanticWeight    float64
 }
 
 type SearchOutput struct {
@@ -31,7 +37,19 @@ func RunSearch(query string, indexPath string, options SearchOptions) error {
 		return err
 	}
 
-	results, err := index.SearchStored(indexPath, query, options.ExtFilters, options.Limit)
+	embeddingConfig := normalizeEmbeddingOptions(options.EmbeddingProvider, options.EmbeddingModel, options.OllamaURL)
+	provider, err := createEmbeddingProvider(options)
+	if err != nil {
+		return err
+	}
+
+	results, err := index.NewHybridSearcher(indexPath, provider).Search(query, index.SearchOptions{
+		ExtFilters:     options.ExtFilters,
+		Limit:          options.Limit,
+		EnableSemantic: options.EnableSemantic,
+		EmbeddingModel: embeddingConfig.Model,
+		SemanticWeight: options.SemanticWeight,
+	})
 	if err != nil {
 		return err
 	}
@@ -58,6 +76,18 @@ func RunSearch(query string, indexPath string, options SearchOptions) error {
 	output.NewPrinter().PrintSearchResults(query, options.ExtFilters, options.Context, results)
 
 	return nil
+}
+
+func createEmbeddingProvider(options SearchOptions) (embedding.Provider, error) {
+	if !options.EnableSemantic {
+		return nil, nil
+	}
+	embeddingConfig := normalizeEmbeddingOptions(options.EmbeddingProvider, options.EmbeddingModel, options.OllamaURL)
+	return embedding.NewProvider(embedding.Config{
+		Provider: embeddingConfig.Provider,
+		Model:    embeddingConfig.Model,
+		BaseURL:  embeddingConfig.BaseURL,
+	})
 }
 
 func printSearchJSON(query string, extFilters []string, results []index.SearchResult) error {

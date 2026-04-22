@@ -2,7 +2,10 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -257,6 +260,58 @@ func TestRunIndexWithConfig(t *testing.T) {
 	})
 	if strings.Contains(testCountOutput, "service_test.go") {
 		t.Fatalf("excluded file appeared in search output: %s", testCountOutput)
+	}
+}
+
+func TestRunIndexAndSearchWithSemantic(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "index.sqlite")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		embeddings := make([][]float32, 0, len(payload.Input))
+		for i := range payload.Input {
+			if i%2 == 0 {
+				embeddings = append(embeddings, []float32{1, 0})
+			} else {
+				embeddings = append(embeddings, []float32{0, 1})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"embeddings": embeddings,
+		})
+	}))
+	defer server.Close()
+
+	mustWriteAppFile(t, filepath.Join(root, "main.go"), "package main\nfunc main() { hello lexical }\n")
+	mustWriteAppFile(t, filepath.Join(root, "note.md"), "semantic note\n")
+
+	if err := RunIndex([]string{root}, indexPath, IndexOptions{
+		EnableSemantic: true,
+		OllamaURL:      server.URL,
+		EmbeddingModel: "test-model",
+	}); err != nil {
+		t.Fatalf("RunIndex(semantic) error = %v", err)
+	}
+
+	jsonOutput := captureStdout(t, func() {
+		err := RunSearch("hello", indexPath, SearchOptions{
+			JSON:           true,
+			EnableSemantic: true,
+			OllamaURL:      server.URL,
+			EmbeddingModel: "test-model",
+		})
+		if err != nil {
+			t.Fatalf("RunSearch(semantic) error = %v", err)
+		}
+	})
+	if !strings.Contains(jsonOutput, `"semantic_score"`) {
+		t.Fatalf("json output missing semantic_score: %s", jsonOutput)
 	}
 }
 

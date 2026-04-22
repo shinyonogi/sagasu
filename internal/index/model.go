@@ -23,12 +23,21 @@ type SearchResult struct {
 	Document      Document `json:"document"`
 	Score         float64  `json:"score"`
 	LexicalScore  float64  `json:"lexical_score,omitempty"`
+	SemanticScore float64  `json:"semantic_score,omitempty"`
 	CoverageScore float64  `json:"coverage_score,omitempty"`
 	PathScore     float64  `json:"path_score,omitempty"`
 	ExactScore    float64  `json:"exact_score,omitempty"`
 	MatchedTerms  int      `json:"matched_terms,omitempty"`
 	TotalTerms    int      `json:"total_terms,omitempty"`
 	QueryCoverage float64  `json:"query_coverage,omitempty"`
+}
+
+type Embedding struct {
+	ChunkKey   string `json:"chunk_key"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
+	Vector     []byte `json:"vector"`
+	UpdatedAt  int64  `json:"updated_at"`
 }
 
 type ExtStat struct {
