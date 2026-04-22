@@ -163,8 +163,8 @@ func (p Printer) badge(text string) string {
 	return p.styled(colorDim, "["+text+"=")
 }
 
-func (p Printer) score(value int) string {
-	return p.styled(colorGreen, fmt.Sprintf("%d]", value))
+func (p Printer) score(value float64) string {
+	return p.styled(colorGreen, fmt.Sprintf("%.3f]", value))
 }
 
 func (p Printer) rank(value int) string {

@@ -9,7 +9,9 @@ import (
 	"github.com/shinyonogi/sagasu/internal/tokenizer"
 	_ "modernc.org/sqlite"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -17,10 +19,13 @@ const sqliteDriverName = "sqlite"
 const ftsSchemaSQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
   key UNINDEXED,
-  document_path UNINDEXED,
+  document_path,
+  file_name,
   content
 );
 `
+
+var expectedFTSColumns = []string{"key", "document_path", "file_name", "content"}
 
 //go:embed sql/schema.sql
 var schemaSQL string
@@ -41,39 +46,13 @@ func SearchStored(path string, query string, extFilters []string, limit int) ([]
 		return nil, err
 	}
 
-	ctx := context.Background()
-	queries := indexdb.New(db)
 	normalizedExts := normalizeExtSlice(extFilters)
 
 	if limit <= 0 {
 		limit = 20
 	}
 
-	if parsed.IsPhrase {
-		return searchPhrase(db, parsed.Phrase, normalizedExts, limit)
-	}
-
-	if len(normalizedExts) > 0 {
-		rows, err := queries.SearchByTermsAndExts(ctx, indexdb.SearchByTermsAndExtsParams{
-			Terms: parsed.Tokens,
-			Exts:  normalizedExts,
-			Limit: int64(limit),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("search stored index: %w", err)
-		}
-		return mapSearchByTermsAndExtsRows(rows), nil
-	}
-
-	rows, err := queries.SearchByTerms(ctx, indexdb.SearchByTermsParams{
-		Terms: parsed.Tokens,
-		Limit: int64(limit),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("search stored index: %w", err)
-	}
-
-	return mapSearchByTermsRows(rows), nil
+	return searchFTS(db, parsed, normalizedExts, limit)
 }
 
 func LoadDocuments(path string) (map[string]Document, error) {
@@ -290,8 +269,42 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("migrate index database: %w", err)
 	}
+	if err := migrateFTS(db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func migrateFTS(db *sql.DB) error {
+	exists, err := ftsTableExists(db)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		if _, err := db.Exec(ftsSchemaSQL); err != nil {
+			return fmt.Errorf("migrate fts schema: %w", err)
+		}
+		return nil
+	}
+
+	columns, err := ftsColumnNames(db)
+	if err != nil {
+		return err
+	}
+	if equalStringSlices(columns, expectedFTSColumns) {
+		return nil
+	}
+
+	if _, err := db.Exec(`DROP TABLE fts_chunks`); err != nil {
+		return fmt.Errorf("drop incompatible fts schema: %w", err)
+	}
 	if _, err := db.Exec(ftsSchemaSQL); err != nil {
-		return fmt.Errorf("migrate fts schema: %w", err)
+		return fmt.Errorf("recreate fts schema: %w", err)
+	}
+	if err := rebuildFTSChunks(db); err != nil {
+		return err
 	}
 
 	return nil
@@ -318,8 +331,21 @@ func parseSearchQuery(query string) parsedSearchQuery {
 	}
 }
 
-func searchPhrase(db *sql.DB, phrase string, normalizedExts []string, limit int) ([]SearchResult, error) {
-	args := []any{`"` + strings.ReplaceAll(phrase, `"`, `""`) + `"`}
+func searchFTS(db *sql.DB, parsed parsedSearchQuery, normalizedExts []string, limit int) ([]SearchResult, error) {
+	matchQuery, searchTerms := buildFTSMatchQuery(parsed)
+	if matchQuery == "" {
+		return nil, nil
+	}
+
+	candidateLimit := limit
+	if candidateLimit < 100 {
+		candidateLimit = 100
+	}
+	if boostedLimit := limit * 8; boostedLimit > candidateLimit {
+		candidateLimit = boostedLimit
+	}
+
+	args := []any{matchQuery}
 	query := `
 SELECT
   c.key,
@@ -329,7 +355,7 @@ SELECT
   d.path,
   d.ext,
   d.modified,
-  1 AS score
+  bm25(fts_chunks, 0.0, 0.4, 1.6, 1.0) AS bm25_score
 FROM fts_chunks f
 JOIN chunks c ON c.key = f.key
 JOIN documents d ON d.path = c.document_path
@@ -343,19 +369,20 @@ WHERE fts_chunks MATCH ?`
 	}
 
 	query += `
-ORDER BY d.path ASC, c.line_number ASC
+ORDER BY bm25_score ASC, d.path ASC, c.line_number ASC
 LIMIT ?`
-	args = append(args, limit)
+	args = append(args, candidateLimit)
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("search phrase: %w", err)
+		return nil, fmt.Errorf("search fts: %w", err)
 	}
 	defer rows.Close()
 
 	results := make([]SearchResult, 0)
 	for rows.Next() {
 		var result SearchResult
+		var bm25Score float64
 		if err := rows.Scan(
 			&result.Chunk.Key,
 			&result.Chunk.DocumentPath,
@@ -364,15 +391,32 @@ LIMIT ?`
 			&result.Document.Path,
 			&result.Document.Ext,
 			&result.Document.Modified,
-			&result.Score,
+			&bm25Score,
 		); err != nil {
-			return nil, fmt.Errorf("scan phrase result: %w", err)
+			return nil, fmt.Errorf("scan fts result: %w", err)
 		}
+		result = rankSearchResult(result, parsed, searchTerms, bm25Score)
 		results = append(results, result)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate phrase results: %w", err)
+		return nil, fmt.Errorf("iterate fts results: %w", err)
+	}
+
+	results = filterPathOnlyDuplicates(results, searchTerms)
+
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			if results[i].Document.Path == results[j].Document.Path {
+				return results[i].Chunk.LineNumber < results[j].Chunk.LineNumber
+			}
+			return results[i].Document.Path < results[j].Document.Path
+		}
+		return results[i].Score > results[j].Score
+	})
+
+	if len(results) > limit {
+		results = results[:limit]
 	}
 
 	return results, nil
@@ -383,48 +427,6 @@ func placeholderList(count int) string {
 		return ""
 	}
 	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
-}
-
-func mapSearchByTermsRows(rows []indexdb.SearchByTermsRow) []SearchResult {
-	results := make([]SearchResult, 0, len(rows))
-	for _, row := range rows {
-		results = append(results, SearchResult{
-			Chunk: Chunk{
-				Key:          row.Key,
-				DocumentPath: row.DocumentPath,
-				LineNumber:   int(row.LineNumber),
-				Content:      row.Content,
-			},
-			Document: Document{
-				Path:     row.Path,
-				Ext:      row.Ext,
-				Modified: row.Modified,
-			},
-			Score: int(row.Score.Float64),
-		})
-	}
-	return results
-}
-
-func mapSearchByTermsAndExtsRows(rows []indexdb.SearchByTermsAndExtsRow) []SearchResult {
-	results := make([]SearchResult, 0, len(rows))
-	for _, row := range rows {
-		results = append(results, SearchResult{
-			Chunk: Chunk{
-				Key:          row.Key,
-				DocumentPath: row.DocumentPath,
-				LineNumber:   int(row.LineNumber),
-				Content:      row.Content,
-			},
-			Document: Document{
-				Path:     row.Path,
-				Ext:      row.Ext,
-				Modified: row.Modified,
-			},
-			Score: int(row.Score.Float64),
-		})
-	}
-	return results
 }
 
 func transact(ctx context.Context, db *sql.DB, fn func(*indexdb.Queries, indexdb.DBTX) error) error {
@@ -504,7 +506,14 @@ func insertTerms(ctx context.Context, queries *indexdb.Queries, terms map[string
 }
 
 func insertFTSChunk(ctx context.Context, dbtx indexdb.DBTX, chunk Chunk) error {
-	_, err := dbtx.ExecContext(ctx, `INSERT INTO fts_chunks(key, document_path, content) VALUES (?, ?, ?)`, chunk.Key, chunk.DocumentPath, chunk.Content)
+	_, err := dbtx.ExecContext(
+		ctx,
+		`INSERT INTO fts_chunks(key, document_path, file_name, content) VALUES (?, ?, ?, ?)`,
+		chunk.Key,
+		chunk.DocumentPath,
+		filepath.Base(chunk.DocumentPath),
+		chunk.Content,
+	)
 	if err != nil {
 		return fmt.Errorf("insert fts chunk %q: %w", chunk.Key, err)
 	}
@@ -515,5 +524,321 @@ func deleteFTSByDocumentPath(ctx context.Context, dbtx indexdb.DBTX, documentPat
 	if _, err := dbtx.ExecContext(ctx, `DELETE FROM fts_chunks WHERE document_path = ?`, documentPath); err != nil {
 		return fmt.Errorf("delete fts rows for %q: %w", documentPath, err)
 	}
+	return nil
+}
+
+func buildFTSMatchQuery(parsed parsedSearchQuery) (string, []string) {
+	if parsed.IsPhrase {
+		phrase := strings.TrimSpace(parsed.Phrase)
+		if phrase == "" {
+			return "", nil
+		}
+		return `"` + strings.ReplaceAll(phrase, `"`, `""`) + `"`, tokenizer.Tokenize(phrase)
+	}
+
+	tokens := uniqueSearchTokens(parsed.Tokens)
+	if len(tokens) == 0 {
+		return "", nil
+	}
+
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		parts = append(parts, strconv.Quote(token))
+	}
+	return strings.Join(parts, " OR "), tokens
+}
+
+func rankSearchResult(result SearchResult, parsed parsedSearchQuery, searchTerms []string, bm25Score float64) SearchResult {
+	coverage := computeCoverage(result, searchTerms)
+	result.MatchedTerms = coverage.matched
+	result.TotalTerms = coverage.total
+	result.QueryCoverage = coverage.ratio
+
+	baseScore := normalizeBM25(bm25Score)
+	coverageBoost := coverage.ratio * 3.0
+	pathBoost := computePathBoost(result, parsed, searchTerms)
+	exactBoost := computeExactBoost(result, parsed)
+
+	result.LexicalScore = baseScore
+	result.CoverageScore = coverageBoost
+	result.PathScore = pathBoost
+	result.ExactScore = exactBoost
+	result.Score = baseScore + coverageBoost + pathBoost + exactBoost
+	return result
+}
+
+type coverageStats struct {
+	matched int
+	total   int
+	ratio   float64
+}
+
+func computeCoverage(result SearchResult, searchTerms []string) coverageStats {
+	terms := uniqueSearchTokens(searchTerms)
+	if len(terms) == 0 {
+		return coverageStats{}
+	}
+
+	searchable := tokenizer.Tokenize(result.Document.Path + " " + result.Chunk.Content)
+	present := make(map[string]struct{}, len(searchable))
+	for _, token := range searchable {
+		present[token] = struct{}{}
+	}
+
+	matched := 0
+	for _, term := range terms {
+		if _, ok := present[term]; ok {
+			matched++
+		}
+	}
+
+	return coverageStats{
+		matched: matched,
+		total:   len(terms),
+		ratio:   float64(matched) / float64(len(terms)),
+	}
+}
+
+func computePathBoost(result SearchResult, parsed parsedSearchQuery, searchTerms []string) float64 {
+	path := strings.ToLower(result.Document.Path)
+	fileName := strings.ToLower(filepath.Base(result.Document.Path))
+	boost := 0.0
+
+	if parsed.IsPhrase {
+		phrase := strings.ToLower(strings.TrimSpace(parsed.Phrase))
+		if phrase == "" {
+			return 0
+		}
+		if strings.Contains(fileName, phrase) {
+			return 1.2
+		}
+		if strings.Contains(path, phrase) {
+			return 0.6
+		}
+		return 0
+	}
+
+	for _, term := range uniqueSearchTokens(searchTerms) {
+		switch {
+		case strings.Contains(fileName, term):
+			boost += 0.35
+		case strings.Contains(path, term):
+			boost += 0.15
+		}
+	}
+
+	if boost > 1.2 {
+		boost = 1.2
+	}
+	return boost
+}
+
+func computeExactBoost(result SearchResult, parsed parsedSearchQuery) float64 {
+	content := strings.ToLower(result.Chunk.Content)
+	path := strings.ToLower(result.Document.Path)
+
+	if parsed.IsPhrase {
+		phrase := strings.ToLower(strings.TrimSpace(parsed.Phrase))
+		if phrase == "" {
+			return 0
+		}
+		switch {
+		case strings.Contains(content, phrase):
+			return 1.5
+		case strings.Contains(path, phrase):
+			return 0.75
+		default:
+			return 0
+		}
+	}
+
+	raw := strings.ToLower(strings.TrimSpace(strings.Join(uniqueSearchTokens(parsed.Tokens), " ")))
+	if raw == "" || !strings.Contains(raw, " ") {
+		return 0
+	}
+
+	switch {
+	case strings.Contains(content, raw):
+		return 0.75
+	case strings.Contains(path, raw):
+		return 0.35
+	default:
+		return 0
+	}
+}
+
+func normalizeBM25(score float64) float64 {
+	if score < 0 {
+		return -score
+	}
+	return 1 / (1 + score)
+}
+
+func uniqueSearchTokens(tokens []string) []string {
+	seen := map[string]struct{}{}
+	unique := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		unique = append(unique, token)
+	}
+	return unique
+}
+
+func filterPathOnlyDuplicates(results []SearchResult, searchTerms []string) []SearchResult {
+	if len(results) == 0 {
+		return results
+	}
+
+	hasContentMatch := make(map[string]bool, len(results))
+	for _, result := range results {
+		if countMatchedTerms(result.Chunk.Content, searchTerms) > 0 {
+			hasContentMatch[result.Document.Path] = true
+		}
+	}
+
+	filtered := make([]SearchResult, 0, len(results))
+	keptPathOnly := map[string]struct{}{}
+	for _, result := range results {
+		contentMatches := countMatchedTerms(result.Chunk.Content, searchTerms)
+		if contentMatches > 0 {
+			filtered = append(filtered, result)
+			continue
+		}
+
+		if hasContentMatch[result.Document.Path] {
+			continue
+		}
+
+		if _, ok := keptPathOnly[result.Document.Path]; ok {
+			continue
+		}
+		keptPathOnly[result.Document.Path] = struct{}{}
+		filtered = append(filtered, result)
+	}
+
+	return filtered
+}
+
+func countMatchedTerms(text string, searchTerms []string) int {
+	terms := uniqueSearchTokens(searchTerms)
+	if len(terms) == 0 {
+		return 0
+	}
+
+	searchable := tokenizer.Tokenize(text)
+	present := make(map[string]struct{}, len(searchable))
+	for _, token := range searchable {
+		present[token] = struct{}{}
+	}
+
+	matched := 0
+	for _, term := range terms {
+		if _, ok := present[term]; ok {
+			matched++
+		}
+	}
+	return matched
+}
+
+func ftsTableExists(db *sql.DB) (bool, error) {
+	var name string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fts_chunks'`).Scan(&name)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check fts table: %w", err)
+	}
+	return true, nil
+}
+
+func ftsColumnNames(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`PRAGMA table_info(fts_chunks)`)
+	if err != nil {
+		return nil, fmt.Errorf("query fts table info: %w", err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, fmt.Errorf("scan fts table info: %w", err)
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate fts table info: %w", err)
+	}
+	return columns, nil
+}
+
+func equalStringSlices(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func rebuildFTSChunks(db *sql.DB) error {
+	rows, err := db.Query(`SELECT key, document_path, content FROM chunks`)
+	if err != nil {
+		return fmt.Errorf("query chunks for fts rebuild: %w", err)
+	}
+	defer rows.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin fts rebuild transaction: %w", err)
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for rows.Next() {
+		var key string
+		var documentPath string
+		var content string
+		if err := rows.Scan(&key, &documentPath, &content); err != nil {
+			return fmt.Errorf("scan chunk for fts rebuild: %w", err)
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO fts_chunks(key, document_path, file_name, content) VALUES (?, ?, ?, ?)`,
+			key,
+			documentPath,
+			filepath.Base(documentPath),
+			content,
+		); err != nil {
+			return fmt.Errorf("rebuild fts chunk %q: %w", key, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate chunks for fts rebuild: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit fts rebuild transaction: %w", err)
+	}
+	committed = true
 	return nil
 }

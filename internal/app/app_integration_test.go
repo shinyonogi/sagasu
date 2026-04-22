@@ -43,6 +43,9 @@ func TestRunIndexSearchAndStatus(t *testing.T) {
 	if !strings.Contains(jsonOutput, `"results"`) {
 		t.Fatalf("json output missing results: %s", jsonOutput)
 	}
+	if !strings.Contains(jsonOutput, `"lexical_score"`) {
+		t.Fatalf("json output missing lexical_score: %s", jsonOutput)
+	}
 
 	statusOutput := captureStdout(t, func() {
 		err := RunStatus(indexPath, StatusOptions{})
