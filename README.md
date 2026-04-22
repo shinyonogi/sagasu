@@ -1,8 +1,8 @@
 # sagasu
 
-`sagasu` is a local full-text search CLI for source repositories.
+`sagasu` is a local hybrid search CLI for source repositories.
 
-It indexes text-based project files into a SQLite database, then searches the stored index with a fast CLI-oriented workflow. By default, indexes are stored in a managed global cache directory so you can search a repository from anywhere.
+It indexes text-based project files into a SQLite database, then searches them with a hybrid lexical and semantic workflow. By default, indexes are stored in a managed global cache directory so you can search a repository from anywhere.
 
 ## Install
 
