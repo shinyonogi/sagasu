@@ -86,7 +86,6 @@ To make that real, you still need:
 This repo now includes:
 
 - [.goreleaser.yaml](/Users/shiny/Dev/Projects/sagasu/.goreleaser.yaml:1)
-- [.github/workflows/cut-release.yml](/Users/shiny/Dev/Projects/sagasu/.github/workflows/cut-release.yml:1)
 - [.github/workflows/release.yml](/Users/shiny/Dev/Projects/sagasu/.github/workflows/release.yml:1)
 
 The GitHub Actions release workflow expects this repository secret:
@@ -95,12 +94,18 @@ The GitHub Actions release workflow expects this repository secret:
 
 Release flow:
 
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
+1. Open GitHub Actions
+2. Run the `release` workflow
+3. Enter a version like `0.1.0` or `0.1.0-beta.1`
 
-That tag push triggers GitHub Actions, which runs GoReleaser, creates a GitHub Release, uploads build artifacts, and updates the Homebrew tap formula.
+The workflow then:
+
+1. Validates the version
+2. Creates and pushes `v<version>` on the latest commit
+3. Runs GoReleaser
+4. Creates the GitHub Release
+5. Uploads build artifacts
+6. Updates the Homebrew tap formula
 
 Release notes are generated automatically from commits since the previous tag. The current GoReleaser changelog config keeps the release notes focused on user-facing changes by excluding commits that start with:
 
@@ -115,13 +120,6 @@ It also groups Conventional Commits into sections such as:
 - `Bug Fixes` for `fix:`
 - `Performance` for `perf:`
 - `Refactors` for `refactor:`
-
-If you prefer to start releases from the GitHub Actions UI:
-
-1. Run the `cut-release` workflow
-2. Enter a version like `0.1.0`
-3. The workflow creates and pushes `v0.1.0` on the latest commit
-4. That tag push triggers the `release` workflow automatically
 
 The configuration follows GoReleaser's Homebrew tap support. GoReleaser's own docs note that its generated Homebrew formulas are meant for third-party taps rather than `homebrew/core`: [GoReleaser Homebrew Formulas](https://goreleaser.com/customization/homebrew_formulas/), [Homebrew Taps](https://docs.brew.sh/Taps)
 
