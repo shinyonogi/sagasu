@@ -13,6 +13,18 @@ const (
 )
 
 func main() {
+	rootCmd := buildRootCommand()
+
+	if err := rootCmd.Execute(); err != nil {
+		_, err = fmt.Fprintln(os.Stderr, err)
+		if err != nil {
+			return
+		}
+		os.Exit(1)
+	}
+}
+
+func buildRootCommand() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "sagasu",
 		Short: "Local full-text search tool for devs",
@@ -78,12 +90,5 @@ func main() {
 	}
 
 	rootCmd.AddCommand(indexCmd, searchCmd, statusCmd)
-
-	if err := rootCmd.Execute(); err != nil {
-		_, err = fmt.Fprintln(os.Stderr, err)
-		if err != nil {
-			return
-		}
-		os.Exit(1)
-	}
+	return rootCmd
 }
