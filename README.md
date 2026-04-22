@@ -4,248 +4,168 @@
 
 It indexes text-based project files into a SQLite database, then searches the stored index with a fast CLI-oriented workflow. By default, indexes are stored in a managed global cache directory so you can search a repository from anywhere.
 
-## Features
+## Install
 
-- SQLite-backed local index
-- Incremental reindexing based on file modification time
-- Search by token with extension filters
-- Context lines around matches
-- Human-friendly CLI output
-- `--json` and `--count` output modes
-- Index status / metadata command
-- Rebuild and doctor commands for recovery / diagnostics
-- Config-based include / exclude filtering
-- Shell completion generation
-- Quoted phrase search backed by SQLite FTS
-
-## Supported Files
-
-The indexer currently includes these extensions:
-
-- `.txt`
-- `.md`
-- `.go`
-- `.ts`
-- `.tsx`
-- `.js`
-- `.jsx`
-- `.json`
-- `.yaml`
-- `.yml`
-- `.tf`
-- `.proto`
-
-The crawler skips common generated or dependency directories:
-
-- `.git`
-- `node_modules`
-- `dist`
-- `build`
-- `vendor`
-
-## Setup
-
-This repo uses [`mise`](https://mise.jdx.dev/) to pin the Go version and provide common tasks.
-
-```bash
-mise install
-```
-
-Or if you want to use Go directly, the current repo version is Go `1.25.0`.
-
-## Common Commands
-
-Using `mise`:
-
-```bash
-mise run install
-mise run test
-mise run index
-mise run search
-mise run fmt
-```
-
-## Homebrew Packaging
-
-This repo now includes a basic GoReleaser setup for publishing Homebrew tap formulas:
-
-- [.goreleaser.yaml](/Users/shiny/Dev/Projects/sagasu/.goreleaser.yaml:1)
-
-The intended install flow is:
+### Homebrew
 
 ```bash
 brew install shinyonogi/tap/sagasu
 ```
 
-To make that real, you still need:
+### Build From Source
 
-1. A tap repository such as `shinyonogi/homebrew-tap`
-2. GitHub releases for `sagasu`
-3. A release workflow or local `goreleaser release` run with a token that can push to the tap repo
-
-This repo now includes:
-
-- [.goreleaser.yaml](/Users/shiny/Dev/Projects/sagasu/.goreleaser.yaml:1)
-- [.github/workflows/release.yml](/Users/shiny/Dev/Projects/sagasu/.github/workflows/release.yml:1)
-
-The GitHub Actions release workflow expects this repository secret:
-
-- `HOMEBREW_TAP_GITHUB_TOKEN`
-
-Release flow:
-
-1. Open GitHub Actions
-2. Run the `release` workflow
-3. Enter a version like `0.1.0` or `0.1.0-beta.1`
-
-The workflow then:
-
-1. Validates the version
-2. Creates and pushes `v<version>` on the latest commit
-3. Runs GoReleaser
-4. Creates the GitHub Release
-5. Uploads build artifacts
-6. Updates the Homebrew tap formula
-
-Release notes are generated automatically from commits since the previous tag. The current GoReleaser changelog config keeps the release notes focused on user-facing changes by excluding commits that start with:
-
-- `docs:`
-- `test:`
-- `chore:`
-- `Merge`
-
-It also groups Conventional Commits into sections such as:
-
-- `Features` for `feat:`
-- `Bug Fixes` for `fix:`
-- `Performance` for `perf:`
-- `Refactors` for `refactor:`
-
-The configuration follows GoReleaser's Homebrew tap support. GoReleaser's own docs note that its generated Homebrew formulas are meant for third-party taps rather than `homebrew/core`: [GoReleaser Homebrew Formulas](https://goreleaser.com/customization/homebrew_formulas/), [Homebrew Taps](https://docs.brew.sh/Taps)
-
-To use the CLI as `sagasu ...`, install it first:
+Requires Go `1.25.0`.
 
 ```bash
-mise run install
+git clone https://github.com/shinyonogi/sagasu.git
+cd sagasu
+go install ./cmd/sagasu
 ```
 
-That installs the binary into `GOBIN` or `$(go env GOPATH)/bin`. If that directory is on your `PATH`, you can run:
+If `GOBIN` or `$(go env GOPATH)/bin` is on your `PATH`, the CLI is available as:
+
+```bash
+sagasu --help
+```
+
+## Features
+
+- SQLite-backed local index with managed global storage
+- Incremental reindexing based on file modification time
+- Search by token, phrase, and extension filter
+- Context lines around matches
+- Human-friendly CLI output
+- Machine-readable JSON and count modes
+- Status, rebuild, and doctor commands
+- Config-based include / exclude filtering
+- Shell completion generation
+
+## Usage
+
+### Index
+
+Build an index for a repository:
 
 ```bash
 sagasu index .
-sagasu search hello
-sagasu status
-sagasu doctor
+sagasu index /path/to/repo
 ```
 
-Using `go run` directly during development:
-
-```bash
-go run ./cmd/sagasu index .
-go run ./cmd/sagasu search hello
-go run ./cmd/sagasu status
-go run ./cmd/sagasu doctor
-```
-
-## CLI Usage
-
-### Build an index
-
-```bash
-go run ./cmd/sagasu index .
-go run ./cmd/sagasu index ./cmd ./internal
-```
-
-By default the index is stored at:
+By default the index is stored in a managed global cache path:
 
 ```text
 ~/.cache/sagasu/indexes/<name>-<hash>.sqlite
 ```
 
-You can override that with:
+Override the storage path explicitly:
 
 ```bash
-go run ./cmd/sagasu index . --index-path /tmp/sagasu.sqlite
+sagasu index /path/to/repo --index-path /tmp/sagasu.sqlite
 ```
 
-JSON summary output:
+Print the indexing summary as JSON:
 
 ```bash
-go run ./cmd/sagasu index . --json
-```
-
-If you want to search that repository later from another directory, pass its root:
-
-```bash
-sagasu search hello --root /path/to/repo
+sagasu index /path/to/repo --json
 ```
 
 Rebuild the index from scratch:
 
 ```bash
-go run ./cmd/sagasu rebuild .
+sagasu rebuild /path/to/repo
 ```
 
 ### Search
 
-Basic search:
+Search from the repository root:
 
 ```bash
-go run ./cmd/sagasu search sqlc
+sagasu search sqlc
+```
+
+Search a repository from anywhere:
+
+```bash
 sagasu search sqlc --root /path/to/repo
 ```
 
 Phrase search:
 
 ```bash
-go run ./cmd/sagasu search '"hello world"'
+sagasu search '"hello world"' --root /path/to/repo
 ```
 
-Limit result count:
+Limit results:
 
 ```bash
-go run ./cmd/sagasu search sqlc --limit 5
+sagasu search sqlc --limit 5
 ```
 
 Filter by extension:
 
 ```bash
-go run ./cmd/sagasu search sqlc --ext go
-go run ./cmd/sagasu search sqlc --ext .go --ext md
+sagasu search sqlc --ext go
+sagasu search sqlc --ext .go --ext md
 ```
 
 Show context lines:
 
 ```bash
-go run ./cmd/sagasu search sqlc -C 2
-go run ./cmd/sagasu search sqlc --context 3
+sagasu search sqlc -C 2
+sagasu search sqlc --context 3
 ```
 
-Count-only output:
+Output modes:
 
 ```bash
-go run ./cmd/sagasu search sqlc --count
+sagasu search sqlc --count
+sagasu search sqlc --json
+sagasu search sqlc --path-only
+sagasu search sqlc --files-with-matches
 ```
 
-Path-only output:
+`--json`, `--count`, `--path-only`, and `--files-with-matches` are mutually exclusive.
+
+### Status
+
+Show index metadata:
 
 ```bash
-go run ./cmd/sagasu search sqlc --path-only
+sagasu status --root /path/to/repo
+sagasu info --root /path/to/repo
+sagasu status --root /path/to/repo --json
 ```
 
-Unique files with matches:
+This includes:
+
+- index file path
+- file size
+- document count
+- chunk count
+- posting count
+- last indexed update time
+- extension breakdown
+
+### Doctor
+
+Check whether the stored index is still in sync with the working tree:
 
 ```bash
-go run ./cmd/sagasu search sqlc --files-with-matches
+sagasu doctor --root /path/to/repo
+sagasu doctor --root /path/to/repo --json
 ```
 
-JSON output:
+`doctor` reports:
+
+- missing files still referenced by the index
+- stale files whose current mtime no longer matches the indexed value
+- unreadable files
+
+If the index is stale or broken:
 
 ```bash
-go run ./cmd/sagasu search sqlc --json --limit 10
+sagasu rebuild /path/to/repo
 ```
-
-Note: `--json`, `--count`, `--path-only`, and `--files-with-matches` are mutually exclusive output modes.
 
 ### Config
 
@@ -267,57 +187,11 @@ Example:
 }
 ```
 
-You can override the config path:
+Use a custom config:
 
 ```bash
-go run ./cmd/sagasu index . --config /path/to/sagasu.json
-```
-
-The same config path can be used with `rebuild`:
-
-```bash
-go run ./cmd/sagasu rebuild . --config /path/to/sagasu.json
-```
-
-### Status / Info
-
-Show index metadata:
-
-```bash
-go run ./cmd/sagasu status
-go run ./cmd/sagasu info
-go run ./cmd/sagasu status --json
-```
-
-This prints:
-
-- index file path
-- file size
-- document count
-- chunk count
-- posting count
-- last indexed update time
-- extension breakdown
-
-### Doctor
-
-Check whether the stored index is still in sync with the working tree:
-
-```bash
-go run ./cmd/sagasu doctor
-go run ./cmd/sagasu doctor --json
-```
-
-`doctor` reports:
-
-- missing files still referenced by the index
-- stale files whose current mtime no longer matches the indexed value
-- unreadable files
-
-If the report is noisy or the index is clearly stale, run:
-
-```bash
-go run ./cmd/sagasu rebuild .
+sagasu index /path/to/repo --config /path/to/sagasu.json
+sagasu rebuild /path/to/repo --config /path/to/sagasu.json
 ```
 
 ### Completion
@@ -325,43 +199,57 @@ go run ./cmd/sagasu rebuild .
 Generate shell completion scripts:
 
 ```bash
-go run ./cmd/sagasu completion bash
-go run ./cmd/sagasu completion zsh
-go run ./cmd/sagasu completion fish
-go run ./cmd/sagasu completion powershell
+sagasu completion bash
+sagasu completion zsh
+sagasu completion fish
+sagasu completion powershell
 ```
 
-The release pipeline also packages bash, zsh, and fish completions so they can be installed through the Homebrew formula.
+## Supported Files
 
-## Development Notes
+The indexer currently includes:
 
-Current indexing flow:
+- `.txt`
+- `.md`
+- `.go`
+- `.ts`
+- `.tsx`
+- `.js`
+- `.jsx`
+- `.json`
+- `.yaml`
+- `.yml`
+- `.tf`
+- `.proto`
 
-1. Walk supported files under the target roots.
-2. Skip unchanged files using saved `modified` timestamps.
-3. Rebuild only changed files.
-4. Delete removed files from the SQLite index.
-5. Search directly from SQLite instead of loading the full index into memory.
+The crawler skips these directories by default:
 
-## Testing
+- `.git`
+- `node_modules`
+- `dist`
+- `build`
+- `vendor`
 
-Run the full test suite with:
+## Limitations
+
+- Search ranking is still simple term-frequency scoring
+- Phrase search is available, but query language is still minimal
+- No advanced boolean query syntax yet
+- No machine-readable output for `doctor` exit codes yet
+- Config format is JSON only
+
+## Development
+
+This repo uses [`mise`](https://mise.jdx.dev/) to pin the Go version and provide common tasks.
 
 ```bash
-go test ./...
+mise install
+mise run test
+mise run fmt
 ```
 
-The project currently has:
+The project currently includes:
 
-- unit tests for tokenizer, filetype, chunker, crawler, builder, output helpers
-- storage tests for SQLite persistence and search
-- integration tests for indexing, search modes, status output, and incremental updates
-
-## Current Limitations
-
-- Search is token-based, not phrase-based
-- Ranking is still simple term-frequency scoring
-- No FTS5 yet
-- No shell completion yet
-- No config file for include/exclude patterns yet
-- No machine-readable output for `index` yet
+- unit tests for tokenizer, filetype, chunker, crawler, builder, output helpers, and path resolution
+- storage tests for SQLite persistence, search, and phrase search
+- integration tests for indexing, search modes, config handling, rebuild, status, and doctor
