@@ -1,0 +1,18 @@
+[tools]
+go = "1.25.0"
+
+[tasks.test]
+description = "Run the Go test suite"
+run = "go test ./..."
+
+[tasks.index]
+description = "Build the local SQLite index for the current repository"
+run = "go run ./cmd/sagasu index ."
+
+[tasks.search]
+description = "Run a sample search against the local index"
+run = "go run ./cmd/sagasu search sqlc --limit 5"
+
+[tasks.fmt]
+description = "Format Go source files"
+run = "gofmt -w cmd internal"

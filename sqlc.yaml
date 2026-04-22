@@ -1,0 +1,10 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "internal/index/sql/schema.sql"
+    queries: "internal/index/sql/queries.sql"
+    gen:
+      go:
+        package: "indexdb"
+        out: "internal/index/sqlc"
+        sql_package: "database/sql"
