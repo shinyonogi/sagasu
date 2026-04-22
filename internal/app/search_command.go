@@ -13,6 +13,7 @@ type SearchOptions struct {
 	Limit      int
 	JSON       bool
 	Count      bool
+	Context    int
 }
 
 type SearchOutput struct {
@@ -41,7 +42,7 @@ func RunSearch(query string, indexPath string, options SearchOptions) error {
 		return printSearchJSON(query, options.ExtFilters, results)
 	}
 
-	output.NewPrinter().PrintSearchResults(query, options.ExtFilters, results)
+	output.NewPrinter().PrintSearchResults(query, options.ExtFilters, options.Context, results)
 
 	return nil
 }

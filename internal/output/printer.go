@@ -23,6 +23,8 @@ type Printer struct {
 	color bool
 }
 
+type fileSnippetCache map[string][]string
+
 type IndexSummary struct {
 	IndexPath string
 	Scanned   int
@@ -48,11 +50,14 @@ func (p Printer) PrintIndexSummary(summary IndexSummary) {
 	fmt.Printf("%s%s\n", p.label("  terms   "), p.metric(summary.Terms, "indexed"))
 }
 
-func (p Printer) PrintSearchResults(query string, extFilters []string, results []index.SearchResult) {
+func (p Printer) PrintSearchResults(query string, extFilters []string, contextLines int, results []index.SearchResult) {
 	fmt.Println(p.title("SEARCH"))
 	fmt.Printf("%s%s\n", p.label("  query   "), p.value(query))
 	if len(extFilters) > 0 {
 		fmt.Printf("%s%s\n", p.label("  ext     "), p.value(strings.Join(normalizeExts(extFilters), ", ")))
+	}
+	if contextLines > 0 {
+		fmt.Printf("%s%s\n", p.label("  context "), p.metric(contextLines, "lines"))
 	}
 	fmt.Printf("%s%s\n", p.label("  results "), p.metric(len(results), "hits"))
 
@@ -62,6 +67,7 @@ func (p Printer) PrintSearchResults(query string, extFilters []string, results [
 	}
 
 	tokens := tokenizer.Tokenize(query)
+	cache := fileSnippetCache{}
 	for i, result := range results {
 		fmt.Println()
 		fmt.Printf(
@@ -73,7 +79,7 @@ func (p Printer) PrintSearchResults(query string, extFilters []string, results [
 			p.score(result.Score),
 			colorResetIf(p.color),
 		)
-		fmt.Printf("    %s\n", p.highlight(result.Chunk.Content, tokens))
+		p.printMatchBody(cache, result, contextLines, tokens)
 	}
 }
 
@@ -111,6 +117,51 @@ func (p Printer) score(value int) string {
 
 func (p Printer) rank(value int) string {
 	return p.styled(colorYellow, fmt.Sprintf("%2d.", value))
+}
+
+func (p Printer) printMatchBody(cache fileSnippetCache, result index.SearchResult, contextLines int, tokens []string) {
+	if contextLines <= 0 {
+		fmt.Printf("    %s\n", p.highlight(result.Chunk.Content, tokens))
+		return
+	}
+
+	lines, ok := cache[result.Document.Path]
+	if !ok {
+		loaded, err := readFileLines(result.Document.Path)
+		if err != nil {
+			fmt.Printf("    %s\n", p.highlight(result.Chunk.Content, tokens))
+			return
+		}
+		lines = loaded
+		cache[result.Document.Path] = lines
+	}
+
+	start := result.Chunk.LineNumber - contextLines
+	if start < 0 {
+		start = 0
+	}
+	end := result.Chunk.LineNumber + contextLines
+	if end >= len(lines) {
+		end = len(lines) - 1
+	}
+
+	width := len(fmt.Sprintf("%d", end+1))
+	for lineNumber := start; lineNumber <= end; lineNumber++ {
+		prefix := " "
+		if lineNumber == result.Chunk.LineNumber {
+			prefix = ">"
+		}
+		content := lines[lineNumber]
+		if lineNumber == result.Chunk.LineNumber {
+			content = p.highlight(content, tokens)
+		}
+		fmt.Printf(
+			"  %s %s | %s\n",
+			p.muted(prefix),
+			p.lineNumber(lineNumber+1, width),
+			content,
+		)
+	}
 }
 
 func (p Printer) highlight(content string, tokens []string) string {
@@ -161,6 +212,10 @@ func (p Printer) styled(prefix string, text string) string {
 	return prefix + text + colorReset
 }
 
+func (p Printer) lineNumber(value int, width int) string {
+	return p.styled(colorDim, fmt.Sprintf("%*d", width, value))
+}
+
 func normalizeExts(extFilters []string) []string {
 	seen := map[string]struct{}{}
 	exts := make([]string, 0, len(extFilters))
@@ -206,6 +261,21 @@ func stdoutSupportsColor() bool {
 	}
 
 	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func readFileLines(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	text = strings.TrimSuffix(text, "\n")
+	if text == "" {
+		return []string{""}, nil
+	}
+
+	return strings.Split(text, "\n"), nil
 }
 
 func colorResetIf(enabled bool) string {

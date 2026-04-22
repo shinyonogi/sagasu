@@ -44,6 +44,7 @@ func main() {
 	var limit int
 	var jsonOutput bool
 	var countOnly bool
+	var contextLines int
 
 	searchCmd := &cobra.Command{
 		Use:   "search [query]",
@@ -55,6 +56,7 @@ func main() {
 				Limit:      limit,
 				JSON:       jsonOutput,
 				Count:      countOnly,
+				Context:    contextLines,
 			})
 		},
 	}
@@ -63,6 +65,7 @@ func main() {
 	searchCmd.Flags().IntVar(&limit, "limit", defaultLimit, "maximum number of results")
 	searchCmd.Flags().BoolVar(&jsonOutput, "json", false, "output search results as JSON")
 	searchCmd.Flags().BoolVar(&countOnly, "count", false, "output only the number of matches")
+	searchCmd.Flags().IntVarP(&contextLines, "context", "C", 0, "show N lines of context around each match")
 
 	rootCmd.AddCommand(indexCmd, searchCmd)
 
