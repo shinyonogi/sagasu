@@ -7,12 +7,12 @@ import (
 	"os"
 )
 
-type StatusOptions struct {
+type DoctorOptions struct {
 	JSON bool
 }
 
-func RunStatus(indexPath string, options StatusOptions) error {
-	stats, err := index.LoadStats(indexPath)
+func RunDoctor(indexPath string, options DoctorOptions) error {
+	report, err := index.Doctor(indexPath)
 	if err != nil {
 		return err
 	}
@@ -20,9 +20,9 @@ func RunStatus(indexPath string, options StatusOptions) error {
 	if options.JSON {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
-		return encoder.Encode(stats)
+		return encoder.Encode(report)
 	}
 
-	output.NewPrinter().PrintIndexStats(stats)
+	output.NewPrinter().PrintDoctorReport(report)
 	return nil
 }

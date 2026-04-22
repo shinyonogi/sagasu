@@ -1,6 +1,7 @@
 package output
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/shinyonogi/sagasu/internal/index"
 	"github.com/shinyonogi/sagasu/internal/tokenizer"
@@ -27,17 +28,23 @@ type Printer struct {
 type fileSnippetCache map[string][]string
 
 type IndexSummary struct {
-	IndexPath string
-	Scanned   int
-	Changed   int
-	Skipped   int
-	Deleted   int
-	Chunks    int
-	Terms     int
+	IndexPath string `json:"path"`
+	Scanned   int    `json:"scanned"`
+	Changed   int    `json:"changed"`
+	Skipped   int    `json:"skipped"`
+	Deleted   int    `json:"deleted"`
+	Chunks    int    `json:"chunks"`
+	Terms     int    `json:"terms"`
 }
 
 func NewPrinter() Printer {
 	return Printer{color: stdoutSupportsColor()}
+}
+
+func (p Printer) PrintJSON(v any) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(v)
 }
 
 func (p Printer) PrintIndexSummary(summary IndexSummary) {
@@ -68,6 +75,30 @@ func (p Printer) PrintIndexStats(stats index.IndexStats) {
 	fmt.Printf("%s%s\n", p.label("  exts    "), p.muted(""))
 	for _, ext := range stats.Exts {
 		fmt.Printf("    %s %s\n", p.value("."+ext.Ext), p.muted(fmt.Sprintf("(%d)", ext.Count)))
+	}
+}
+
+func (p Printer) PrintDoctorReport(report index.DoctorReport) {
+	fmt.Println(p.title("DOCTOR"))
+	fmt.Printf("%s%s\n", p.label("  database"), p.value(report.Path))
+	status := "healthy"
+	if !report.Healthy {
+		status = "needs attention"
+	}
+	fmt.Printf("%s%s\n", p.label("  status  "), p.value(status))
+	fmt.Printf("%s%s\n", p.label("  docs    "), p.metric(report.Documents, "documents"))
+	fmt.Printf("%s%s\n", p.label("  missing "), p.metric(len(report.MissingFiles), "files"))
+	fmt.Printf("%s%s\n", p.label("  stale   "), p.metric(len(report.StaleFiles), "files"))
+	fmt.Printf("%s%s\n", p.label("  unread  "), p.metric(len(report.UnreadableFiles), "files"))
+
+	if len(report.Problems) == 0 {
+		fmt.Printf("%s\n", p.muted("  no problems detected"))
+		return
+	}
+
+	fmt.Printf("%s\n", p.label("  issues"))
+	for _, problem := range report.Problems {
+		fmt.Printf("    %s\n", problem)
 	}
 }
 

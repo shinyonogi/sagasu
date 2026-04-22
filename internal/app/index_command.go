@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/shinyonogi/sagasu/internal/config"
 	"github.com/shinyonogi/sagasu/internal/crawler"
 	"github.com/shinyonogi/sagasu/internal/index"
 	"github.com/shinyonogi/sagasu/internal/output"
@@ -8,14 +9,37 @@ import (
 	"sync"
 )
 
-func RunIndex(roots []string, indexPath string) error {
+type IndexOptions struct {
+	ConfigPath string
+	JSON       bool
+}
+
+func RunIndex(roots []string, indexPath string, options IndexOptions) error {
+	return runIndex(roots, indexPath, false, options)
+}
+
+func RunRebuild(roots []string, indexPath string, options IndexOptions) error {
+	return runIndex(roots, indexPath, true, options)
+}
+
+func runIndex(roots []string, indexPath string, forceRebuild bool, options IndexOptions) error {
 	printer := output.NewPrinter()
-	files, err := crawler.CollectFiles(roots)
+	cfg, err := config.Load(options.ConfigPath)
 	if err != nil {
 		return err
 	}
 
-	existingDocuments, err := index.LoadDocuments(indexPath)
+	files, err := crawler.CollectFiles(roots, crawler.Options{
+		IncludePatterns: cfg.Include,
+		ExcludePatterns: cfg.Exclude,
+		IgnoreDirs:      cfg.IgnoreDirs,
+	})
+	if err != nil {
+		return err
+	}
+
+	existingDocuments := map[string]index.Document{}
+	existingDocuments, err = index.LoadDocuments(indexPath)
 	if err != nil {
 		return err
 	}
@@ -28,7 +52,7 @@ func RunIndex(roots []string, indexPath string) error {
 	for _, file := range files {
 		seen[file.Path] = struct{}{}
 
-		if isUnchanged(file, existingDocuments) {
+		if !forceRebuild && isUnchanged(file, existingDocuments) {
 			continue
 		}
 
@@ -40,9 +64,15 @@ func RunIndex(roots []string, indexPath string) error {
 	}
 
 	var deletedPaths []string
-	for path := range existingDocuments {
-		if _, ok := seen[path]; !ok {
+	if forceRebuild {
+		for path := range existingDocuments {
 			deletedPaths = append(deletedPaths, path)
+		}
+	} else {
+		for path := range existingDocuments {
+			if _, ok := seen[path]; !ok {
+				deletedPaths = append(deletedPaths, path)
+			}
 		}
 	}
 
@@ -50,7 +80,7 @@ func RunIndex(roots []string, indexPath string) error {
 		return err
 	}
 
-	printer.PrintIndexSummary(output.IndexSummary{
+	summary := output.IndexSummary{
 		IndexPath: indexPath,
 		Scanned:   len(files),
 		Changed:   len(changedFiles),
@@ -58,7 +88,12 @@ func RunIndex(roots []string, indexPath string) error {
 		Deleted:   len(deletedPaths),
 		Chunks:    len(changed.Chunks),
 		Terms:     len(changed.Terms),
-	})
+	}
+
+	if options.JSON {
+		return printer.PrintJSON(summary)
+	}
+	printer.PrintIndexSummary(summary)
 
 	return nil
 }

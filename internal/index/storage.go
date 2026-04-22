@@ -9,17 +9,25 @@ import (
 	"github.com/shinyonogi/sagasu/internal/tokenizer"
 	_ "modernc.org/sqlite"
 	"os"
+	"sort"
 	"strings"
 )
 
 const sqliteDriverName = "sqlite"
+const ftsSchemaSQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
+  key UNINDEXED,
+  document_path UNINDEXED,
+  content
+);
+`
 
 //go:embed sql/schema.sql
 var schemaSQL string
 
 func SearchStored(path string, query string, extFilters []string, limit int) ([]SearchResult, error) {
-	tokens := tokenizer.Tokenize(query)
-	if len(tokens) == 0 {
+	parsed := parseSearchQuery(query)
+	if !parsed.IsPhrase && len(parsed.Tokens) == 0 {
 		return nil, nil
 	}
 
@@ -41,9 +49,13 @@ func SearchStored(path string, query string, extFilters []string, limit int) ([]
 		limit = 20
 	}
 
+	if parsed.IsPhrase {
+		return searchPhrase(db, parsed.Phrase, normalizedExts, limit)
+	}
+
 	if len(normalizedExts) > 0 {
 		rows, err := queries.SearchByTermsAndExts(ctx, indexdb.SearchByTermsAndExtsParams{
-			Terms: tokens,
+			Terms: parsed.Tokens,
 			Exts:  normalizedExts,
 			Limit: int64(limit),
 		})
@@ -54,7 +66,7 @@ func SearchStored(path string, query string, extFilters []string, limit int) ([]
 	}
 
 	rows, err := queries.SearchByTerms(ctx, indexdb.SearchByTermsParams{
-		Terms: tokens,
+		Terms: parsed.Tokens,
 		Limit: int64(limit),
 	})
 	if err != nil {
@@ -146,6 +158,47 @@ ORDER BY count DESC, ext ASC
 	return stats, nil
 }
 
+func Doctor(path string) (DoctorReport, error) {
+	documents, err := LoadDocuments(path)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+
+	report := DoctorReport{
+		Path:      path,
+		Healthy:   true,
+		Documents: len(documents),
+	}
+
+	for docPath, document := range documents {
+		info, err := os.Stat(docPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				report.MissingFiles = append(report.MissingFiles, docPath)
+				report.Problems = append(report.Problems, fmt.Sprintf("missing file: %s", docPath))
+			} else {
+				report.UnreadableFiles = append(report.UnreadableFiles, docPath)
+				report.Problems = append(report.Problems, fmt.Sprintf("unreadable file: %s", docPath))
+			}
+			report.Healthy = false
+			continue
+		}
+
+		if info.ModTime().Unix() != document.Modified {
+			report.StaleFiles = append(report.StaleFiles, docPath)
+			report.Problems = append(report.Problems, fmt.Sprintf("stale file: %s", docPath))
+			report.Healthy = false
+		}
+	}
+
+	sort.Strings(report.MissingFiles)
+	sort.Strings(report.StaleFiles)
+	sort.Strings(report.UnreadableFiles)
+	sort.Strings(report.Problems)
+
+	return report, nil
+}
+
 func ApplyChanges(path string, changed *InvertedIndex, deletedPaths []string) error {
 	db, err := openDB(path)
 	if err != nil {
@@ -158,14 +211,20 @@ func ApplyChanges(path string, changed *InvertedIndex, deletedPaths []string) er
 	}
 
 	ctx := context.Background()
-	return transact(ctx, db, func(queries *indexdb.Queries) error {
+	return transact(ctx, db, func(queries *indexdb.Queries, dbtx indexdb.DBTX) error {
 		for _, documentPath := range deletedPaths {
+			if err := deleteFTSByDocumentPath(ctx, dbtx, documentPath); err != nil {
+				return err
+			}
 			if err := queries.DeleteDocument(ctx, documentPath); err != nil {
 				return fmt.Errorf("delete document %q: %w", documentPath, err)
 			}
 		}
 
 		for _, document := range changed.Documents {
+			if err := deleteFTSByDocumentPath(ctx, dbtx, document.Path); err != nil {
+				return err
+			}
 			if err := queries.DeleteDocument(ctx, document.Path); err != nil {
 				return fmt.Errorf("replace document %q: %w", document.Path, err)
 			}
@@ -175,7 +234,7 @@ func ApplyChanges(path string, changed *InvertedIndex, deletedPaths []string) er
 			return err
 		}
 
-		if err := insertChunks(ctx, queries, changed.Chunks); err != nil {
+		if err := insertChunks(ctx, dbtx, queries, changed.Chunks); err != nil {
 			return err
 		}
 
@@ -231,8 +290,99 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("migrate index database: %w", err)
 	}
+	if _, err := db.Exec(ftsSchemaSQL); err != nil {
+		return fmt.Errorf("migrate fts schema: %w", err)
+	}
 
 	return nil
+}
+
+type parsedSearchQuery struct {
+	IsPhrase bool
+	Phrase   string
+	Tokens   []string
+}
+
+func parseSearchQuery(query string) parsedSearchQuery {
+	trimmed := strings.TrimSpace(query)
+	if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") {
+		phrase := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+		return parsedSearchQuery{
+			IsPhrase: phrase != "",
+			Phrase:   phrase,
+		}
+	}
+
+	return parsedSearchQuery{
+		Tokens: tokenizer.Tokenize(query),
+	}
+}
+
+func searchPhrase(db *sql.DB, phrase string, normalizedExts []string, limit int) ([]SearchResult, error) {
+	args := []any{`"` + strings.ReplaceAll(phrase, `"`, `""`) + `"`}
+	query := `
+SELECT
+  c.key,
+  c.document_path,
+  c.line_number,
+  c.content,
+  d.path,
+  d.ext,
+  d.modified,
+  1 AS score
+FROM fts_chunks f
+JOIN chunks c ON c.key = f.key
+JOIN documents d ON d.path = c.document_path
+WHERE fts_chunks MATCH ?`
+
+	if len(normalizedExts) > 0 {
+		query += ` AND d.ext IN (` + placeholderList(len(normalizedExts)) + `)`
+		for _, ext := range normalizedExts {
+			args = append(args, ext)
+		}
+	}
+
+	query += `
+ORDER BY d.path ASC, c.line_number ASC
+LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search phrase: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]SearchResult, 0)
+	for rows.Next() {
+		var result SearchResult
+		if err := rows.Scan(
+			&result.Chunk.Key,
+			&result.Chunk.DocumentPath,
+			&result.Chunk.LineNumber,
+			&result.Chunk.Content,
+			&result.Document.Path,
+			&result.Document.Ext,
+			&result.Document.Modified,
+			&result.Score,
+		); err != nil {
+			return nil, fmt.Errorf("scan phrase result: %w", err)
+		}
+		results = append(results, result)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate phrase results: %w", err)
+	}
+
+	return results, nil
+}
+
+func placeholderList(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
 }
 
 func mapSearchByTermsRows(rows []indexdb.SearchByTermsRow) []SearchResult {
@@ -277,7 +427,7 @@ func mapSearchByTermsAndExtsRows(rows []indexdb.SearchByTermsAndExtsRow) []Searc
 	return results
 }
 
-func transact(ctx context.Context, db *sql.DB, fn func(*indexdb.Queries) error) error {
+func transact(ctx context.Context, db *sql.DB, fn func(*indexdb.Queries, indexdb.DBTX) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -290,7 +440,7 @@ func transact(ctx context.Context, db *sql.DB, fn func(*indexdb.Queries) error) 
 		}
 	}()
 
-	if err := fn(indexdb.New(db).WithTx(tx)); err != nil {
+	if err := fn(indexdb.New(db).WithTx(tx), tx); err != nil {
 		return err
 	}
 
@@ -317,7 +467,7 @@ func insertDocuments(ctx context.Context, queries *indexdb.Queries, documents ma
 	return nil
 }
 
-func insertChunks(ctx context.Context, queries *indexdb.Queries, chunks map[string]Chunk) error {
+func insertChunks(ctx context.Context, dbtx indexdb.DBTX, queries *indexdb.Queries, chunks map[string]Chunk) error {
 	for _, chunk := range chunks {
 		err := queries.CreateChunk(ctx, indexdb.CreateChunkParams{
 			Key:          chunk.Key,
@@ -327,6 +477,9 @@ func insertChunks(ctx context.Context, queries *indexdb.Queries, chunks map[stri
 		})
 		if err != nil {
 			return fmt.Errorf("insert chunk %q: %w", chunk.Key, err)
+		}
+		if err := insertFTSChunk(ctx, dbtx, chunk); err != nil {
+			return err
 		}
 	}
 
@@ -347,5 +500,20 @@ func insertTerms(ctx context.Context, queries *indexdb.Queries, terms map[string
 		}
 	}
 
+	return nil
+}
+
+func insertFTSChunk(ctx context.Context, dbtx indexdb.DBTX, chunk Chunk) error {
+	_, err := dbtx.ExecContext(ctx, `INSERT INTO fts_chunks(key, document_path, content) VALUES (?, ?, ?)`, chunk.Key, chunk.DocumentPath, chunk.Content)
+	if err != nil {
+		return fmt.Errorf("insert fts chunk %q: %w", chunk.Key, err)
+	}
+	return nil
+}
+
+func deleteFTSByDocumentPath(ctx context.Context, dbtx indexdb.DBTX, documentPath string) error {
+	if _, err := dbtx.ExecContext(ctx, `DELETE FROM fts_chunks WHERE document_path = ?`, documentPath); err != nil {
+		return fmt.Errorf("delete fts rows for %q: %w", documentPath, err)
+	}
 	return nil
 }

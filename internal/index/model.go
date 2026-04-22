@@ -25,18 +25,28 @@ type SearchResult struct {
 }
 
 type ExtStat struct {
-	Ext   string
-	Count int
+	Ext   string `json:"ext"`
+	Count int    `json:"count"`
 }
 
 type IndexStats struct {
-	Path         string
-	SizeBytes    int64
-	Documents    int
-	Chunks       int
-	Terms        int
-	LastModified int64
-	Exts         []ExtStat
+	Path         string    `json:"path"`
+	SizeBytes    int64     `json:"size_bytes"`
+	Documents    int       `json:"documents"`
+	Chunks       int       `json:"chunks"`
+	Terms        int       `json:"terms"`
+	LastModified int64     `json:"last_modified"`
+	Exts         []ExtStat `json:"exts"`
+}
+
+type DoctorReport struct {
+	Path            string   `json:"path"`
+	Healthy         bool     `json:"healthy"`
+	Documents       int      `json:"documents"`
+	MissingFiles    []string `json:"missing_files"`
+	StaleFiles      []string `json:"stale_files"`
+	UnreadableFiles []string `json:"unreadable_files"`
+	Problems        []string `json:"problems"`
 }
 
 type InvertedIndex struct {

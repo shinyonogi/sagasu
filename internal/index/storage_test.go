@@ -74,6 +74,17 @@ func TestApplyChangesSearchAndStats(t *testing.T) {
 	if len(stats.Exts) != 2 {
 		t.Fatalf("len(stats.Exts) = %d, want 2", len(stats.Exts))
 	}
+
+	phraseResults, err := SearchStored(dbPath, `"hello world"`, nil, 10)
+	if err != nil {
+		t.Fatalf("SearchStored(phrase) error = %v", err)
+	}
+	if len(phraseResults) != 1 {
+		t.Fatalf("len(phraseResults) = %d, want 1", len(phraseResults))
+	}
+	if phraseResults[0].Document.Ext != "md" {
+		t.Fatalf("phraseResults[0].Document.Ext = %q, want %q", phraseResults[0].Document.Ext, "md")
+	}
 }
 
 func TestApplyChangesDeletesDocuments(t *testing.T) {

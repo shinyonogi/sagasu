@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	defaultIndexPath = ".sagasu-index.sqlite"
-	defaultLimit     = 20
+	defaultIndexPath  = ".sagasu-index.sqlite"
+	defaultLimit      = 20
+	defaultConfigPath = ".sagasu.json"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func buildRootCommand() *cobra.Command {
 	}
 
 	var indexPath string
+	var configPath string
 
 	rootCmd.PersistentFlags().StringVar(
 		&indexPath,
@@ -38,25 +40,41 @@ func buildRootCommand() *cobra.Command {
 		defaultIndexPath,
 		"path to sqlite index file",
 	)
+	rootCmd.PersistentFlags().StringVar(
+		&configPath,
+		"config",
+		defaultConfigPath,
+		"path to sagasu config file",
+	)
+
+	var indexJSON bool
 
 	indexCmd := &cobra.Command{
 		Use:   "index [dirs...]",
 		Short: "Build indices from directories",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := app.RunIndex(args, indexPath)
+			err := app.RunIndex(args, indexPath, app.IndexOptions{
+				ConfigPath: configPath,
+				JSON:       indexJSON,
+			})
 			if err != nil {
 				return err
 			}
 			return nil
 		},
 	}
+	indexCmd.Flags().BoolVar(&indexJSON, "json", false, "output index summary as JSON")
 
 	var extFilters []string
 	var limit int
 	var jsonOutput bool
 	var countOnly bool
 	var contextLines int
+	var pathOnly bool
+	var filesWithMatches bool
+	var statusJSON bool
+	var doctorJSON bool
 
 	searchCmd := &cobra.Command{
 		Use:   "search [query]",
@@ -69,6 +87,8 @@ func buildRootCommand() *cobra.Command {
 				JSON:       jsonOutput,
 				Count:      countOnly,
 				Context:    contextLines,
+				PathOnly:   pathOnly,
+				FilesOnly:  filesWithMatches,
 			})
 		},
 	}
@@ -77,6 +97,8 @@ func buildRootCommand() *cobra.Command {
 	searchCmd.Flags().IntVar(&limit, "limit", defaultLimit, "maximum number of results")
 	searchCmd.Flags().BoolVar(&jsonOutput, "json", false, "output search results as JSON")
 	searchCmd.Flags().BoolVar(&countOnly, "count", false, "output only the number of matches")
+	searchCmd.Flags().BoolVar(&pathOnly, "path-only", false, "output match locations as path:line")
+	searchCmd.Flags().BoolVar(&filesWithMatches, "files-with-matches", false, "output unique file paths with matches")
 	searchCmd.Flags().IntVarP(&contextLines, "context", "C", 0, "show N lines of context around each match")
 
 	statusCmd := &cobra.Command{
@@ -85,10 +107,59 @@ func buildRootCommand() *cobra.Command {
 		Aliases: []string{"info"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.RunStatus(indexPath)
+			return app.RunStatus(indexPath, app.StatusOptions{
+				JSON: statusJSON,
+			})
+		},
+	}
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "output index stats as JSON")
+
+	rebuildCmd := &cobra.Command{
+		Use:   "rebuild [dirs...]",
+		Short: "Rebuild the index from scratch",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.RunRebuild(args, indexPath, app.IndexOptions{
+				ConfigPath: configPath,
+				JSON:       indexJSON,
+			})
+		},
+	}
+	rebuildCmd.Flags().BoolVar(&indexJSON, "json", false, "output rebuild summary as JSON")
+
+	doctorCmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check index health and stale documents",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.RunDoctor(indexPath, app.DoctorOptions{
+				JSON: doctorJSON,
+			})
+		},
+	}
+	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "output doctor results as JSON")
+
+	completionCmd := &cobra.Command{
+		Use:       "completion [bash|zsh|fish|powershell]",
+		Short:     "Generate shell completion scripts",
+		ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+		Args:      cobra.ExactValidArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return rootCmd.GenBashCompletionV2(os.Stdout, true)
+			case "zsh":
+				return rootCmd.GenZshCompletion(os.Stdout)
+			case "fish":
+				return rootCmd.GenFishCompletion(os.Stdout, true)
+			case "powershell":
+				return rootCmd.GenPowerShellCompletionWithDesc(os.Stdout)
+			default:
+				return fmt.Errorf("unsupported shell: %s", args[0])
+			}
 		},
 	}
 
-	rootCmd.AddCommand(indexCmd, searchCmd, statusCmd)
+	rootCmd.AddCommand(indexCmd, rebuildCmd, searchCmd, statusCmd, doctorCmd, completionCmd)
 	return rootCmd
 }

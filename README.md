@@ -13,6 +13,10 @@ It indexes text-based project files into a SQLite database, then searches the st
 - Human-friendly CLI output
 - `--json` and `--count` output modes
 - Index status / metadata command
+- Rebuild and doctor commands for recovery / diagnostics
+- Config-based include / exclude filtering
+- Shell completion generation
+- Quoted phrase search backed by SQLite FTS
 
 ## Supported Files
 
@@ -54,18 +58,35 @@ Or if you want to use Go directly, the current repo version is Go `1.25.0`.
 Using `mise`:
 
 ```bash
+mise run install
 mise run test
 mise run index
 mise run search
 mise run fmt
 ```
 
-Using `go run` directly:
+To use the CLI as `sagasu ...`, install it first:
+
+```bash
+mise run install
+```
+
+That installs the binary into `GOBIN` or `$(go env GOPATH)/bin`. If that directory is on your `PATH`, you can run:
+
+```bash
+sagasu index .
+sagasu search hello
+sagasu status
+sagasu doctor
+```
+
+Using `go run` directly during development:
 
 ```bash
 go run ./cmd/sagasu index .
 go run ./cmd/sagasu search hello
 go run ./cmd/sagasu status
+go run ./cmd/sagasu doctor
 ```
 
 ## CLI Usage
@@ -89,12 +110,30 @@ You can override that with:
 go run ./cmd/sagasu index . --index-path /tmp/sagasu.sqlite
 ```
 
+JSON summary output:
+
+```bash
+go run ./cmd/sagasu index . --json
+```
+
+Rebuild the index from scratch:
+
+```bash
+go run ./cmd/sagasu rebuild .
+```
+
 ### Search
 
 Basic search:
 
 ```bash
 go run ./cmd/sagasu search sqlc
+```
+
+Phrase search:
+
+```bash
+go run ./cmd/sagasu search '"hello world"'
 ```
 
 Limit result count:
@@ -123,13 +162,51 @@ Count-only output:
 go run ./cmd/sagasu search sqlc --count
 ```
 
+Path-only output:
+
+```bash
+go run ./cmd/sagasu search sqlc --path-only
+```
+
+Unique files with matches:
+
+```bash
+go run ./cmd/sagasu search sqlc --files-with-matches
+```
+
 JSON output:
 
 ```bash
 go run ./cmd/sagasu search sqlc --json --limit 10
 ```
 
-Note: `--json` and `--count` cannot be used together.
+Note: `--json`, `--count`, `--path-only`, and `--files-with-matches` are mutually exclusive output modes.
+
+### Config
+
+`sagasu` can load include / exclude settings from a JSON config file.
+
+By default it looks for:
+
+```text
+.sagasu.json
+```
+
+Example:
+
+```json
+{
+  "include": ["internal/**/*.go", "cmd/**/*.go"],
+  "exclude": ["**/*_test.go"],
+  "ignore_dirs": ["tmp", "coverage"]
+}
+```
+
+You can override the config path:
+
+```bash
+go run ./cmd/sagasu index . --config /path/to/sagasu.json
+```
 
 ### Status / Info
 
@@ -138,6 +215,7 @@ Show index metadata:
 ```bash
 go run ./cmd/sagasu status
 go run ./cmd/sagasu info
+go run ./cmd/sagasu status --json
 ```
 
 This prints:
@@ -149,6 +227,38 @@ This prints:
 - posting count
 - last indexed update time
 - extension breakdown
+
+### Doctor
+
+Check whether the stored index is still in sync with the working tree:
+
+```bash
+go run ./cmd/sagasu doctor
+go run ./cmd/sagasu doctor --json
+```
+
+`doctor` reports:
+
+- missing files still referenced by the index
+- stale files whose current mtime no longer matches the indexed value
+- unreadable files
+
+If the report is noisy or the index is clearly stale, run:
+
+```bash
+go run ./cmd/sagasu rebuild .
+```
+
+### Completion
+
+Generate shell completion scripts:
+
+```bash
+go run ./cmd/sagasu completion bash
+go run ./cmd/sagasu completion zsh
+go run ./cmd/sagasu completion fish
+go run ./cmd/sagasu completion powershell
+```
 
 ## Development Notes
 
@@ -181,4 +291,4 @@ The project currently has:
 - No FTS5 yet
 - No shell completion yet
 - No config file for include/exclude patterns yet
-- JSON output is available for search, but not yet for status
+- No machine-readable output for `index` yet

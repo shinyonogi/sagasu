@@ -18,7 +18,7 @@ func TestCollectFilesFiltersAndIgnores(t *testing.T) {
 	mustWriteFile(t, filepath.Join(root, "node_modules", "dep.js"), "console.log('x')\n")
 	mustWriteFile(t, filepath.Join(root, ".git", "config"), "[core]\n")
 
-	got, err := CollectFiles([]string{root})
+	got, err := CollectFiles([]string{root}, Options{})
 	if err != nil {
 		t.Fatalf("CollectFiles() error = %v", err)
 	}
@@ -38,6 +38,31 @@ func TestCollectFilesFiltersAndIgnores(t *testing.T) {
 		if _, ok := paths[name]; ok {
 			t.Fatalf("did not expect %q to be collected, got %#v", name, paths)
 		}
+	}
+}
+
+func TestCollectFilesIncludeExcludePatterns(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+
+	mustWriteFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n")
+	mustWriteFile(t, filepath.Join(root, "internal", "service.go"), "package internal\n")
+	mustWriteFile(t, filepath.Join(root, "internal", "service_test.go"), "package internal\n")
+
+	got, err := CollectFiles([]string{root}, Options{
+		IncludePatterns: []string{"internal/**/*.go"},
+		ExcludePatterns: []string{"**/*_test.go"},
+	})
+	if err != nil {
+		t.Fatalf("CollectFiles() error = %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if filepath.Base(got[0].Path) != "service.go" {
+		t.Fatalf("got[0].Path = %q, want service.go", got[0].Path)
 	}
 }
 
