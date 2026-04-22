@@ -3,12 +3,12 @@ package main
 import (
 	"fmt"
 	"github.com/shinyonogi/sagasu/internal/app"
+	"github.com/shinyonogi/sagasu/internal/indexpath"
 	"github.com/spf13/cobra"
 	"os"
 )
 
 const (
-	defaultIndexPath  = ".sagasu-index.sqlite"
 	defaultLimit      = 20
 	defaultConfigPath = ".sagasu.json"
 )
@@ -32,13 +32,20 @@ func buildRootCommand() *cobra.Command {
 	}
 
 	var indexPath string
+	var rootPath string
 	var configPath string
 
 	rootCmd.PersistentFlags().StringVar(
 		&indexPath,
 		"index-path",
-		defaultIndexPath,
-		"path to sqlite index file",
+		"",
+		"path to sqlite index file (overrides the managed global index path)",
+	)
+	rootCmd.PersistentFlags().StringVar(
+		&rootPath,
+		"root",
+		"",
+		"repository root used to resolve the managed global index path",
 	)
 	rootCmd.PersistentFlags().StringVar(
 		&configPath,
@@ -54,7 +61,11 @@ func buildRootCommand() *cobra.Command {
 		Short: "Build indices from directories",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := app.RunIndex(args, indexPath, app.IndexOptions{
+			resolvedIndexPath, err := indexpath.ResolveForRoots(indexPath, args)
+			if err != nil {
+				return err
+			}
+			err = app.RunIndex(args, resolvedIndexPath, app.IndexOptions{
 				ConfigPath: configPath,
 				JSON:       indexJSON,
 			})
@@ -81,7 +92,11 @@ func buildRootCommand() *cobra.Command {
 		Short: "Search indexed content",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.RunSearch(args[0], indexPath, app.SearchOptions{
+			resolvedIndexPath, err := indexpath.ResolveForRoot(indexPath, rootPath)
+			if err != nil {
+				return err
+			}
+			return app.RunSearch(args[0], resolvedIndexPath, app.SearchOptions{
 				ExtFilters: extFilters,
 				Limit:      limit,
 				JSON:       jsonOutput,
@@ -107,7 +122,11 @@ func buildRootCommand() *cobra.Command {
 		Aliases: []string{"info"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.RunStatus(indexPath, app.StatusOptions{
+			resolvedIndexPath, err := indexpath.ResolveForRoot(indexPath, rootPath)
+			if err != nil {
+				return err
+			}
+			return app.RunStatus(resolvedIndexPath, app.StatusOptions{
 				JSON: statusJSON,
 			})
 		},
@@ -119,7 +138,11 @@ func buildRootCommand() *cobra.Command {
 		Short: "Rebuild the index from scratch",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.RunRebuild(args, indexPath, app.IndexOptions{
+			resolvedIndexPath, err := indexpath.ResolveForRoots(indexPath, args)
+			if err != nil {
+				return err
+			}
+			return app.RunRebuild(args, resolvedIndexPath, app.IndexOptions{
 				ConfigPath: configPath,
 				JSON:       indexJSON,
 			})
@@ -132,7 +155,11 @@ func buildRootCommand() *cobra.Command {
 		Short: "Check index health and stale documents",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.RunDoctor(indexPath, app.DoctorOptions{
+			resolvedIndexPath, err := indexpath.ResolveForRoot(indexPath, rootPath)
+			if err != nil {
+				return err
+			}
+			return app.RunDoctor(resolvedIndexPath, app.DoctorOptions{
 				JSON: doctorJSON,
 			})
 		},

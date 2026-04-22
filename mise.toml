@@ -5,7 +5,7 @@ go = "1.25.0"
 description = "Run the Go test suite"
 run = "go test ./..."
 
-[tasks.install]
+[tasks."cli:install"]
 description = "Install the sagasu CLI into GOBIN or GOPATH/bin"
 run = "go install ./cmd/sagasu"
 

@@ -2,7 +2,7 @@
 
 `sagasu` is a local full-text search CLI for source repositories.
 
-It indexes text-based project files into a SQLite database, then searches the stored index with a fast CLI-oriented workflow. The current implementation is aimed at local code search for development projects.
+It indexes text-based project files into a SQLite database, then searches the stored index with a fast CLI-oriented workflow. By default, indexes are stored in a managed global cache directory so you can search a repository from anywhere.
 
 ## Features
 
@@ -65,6 +65,66 @@ mise run search
 mise run fmt
 ```
 
+## Homebrew Packaging
+
+This repo now includes a basic GoReleaser setup for publishing Homebrew tap formulas:
+
+- [.goreleaser.yaml](/Users/shiny/Dev/Projects/sagasu/.goreleaser.yaml:1)
+
+The intended install flow is:
+
+```bash
+brew install shinyonogi/tap/sagasu
+```
+
+To make that real, you still need:
+
+1. A tap repository such as `shinyonogi/homebrew-tap`
+2. GitHub releases for `sagasu`
+3. A release workflow or local `goreleaser release` run with a token that can push to the tap repo
+
+This repo now includes:
+
+- [.goreleaser.yaml](/Users/shiny/Dev/Projects/sagasu/.goreleaser.yaml:1)
+- [.github/workflows/cut-release.yml](/Users/shiny/Dev/Projects/sagasu/.github/workflows/cut-release.yml:1)
+- [.github/workflows/release.yml](/Users/shiny/Dev/Projects/sagasu/.github/workflows/release.yml:1)
+
+The GitHub Actions release workflow expects this repository secret:
+
+- `HOMEBREW_TAP_GITHUB_TOKEN`
+
+Release flow:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That tag push triggers GitHub Actions, which runs GoReleaser, creates a GitHub Release, uploads build artifacts, and updates the Homebrew tap formula.
+
+Release notes are generated automatically from commits since the previous tag. The current GoReleaser changelog config keeps the release notes focused on user-facing changes by excluding commits that start with:
+
+- `docs:`
+- `test:`
+- `chore:`
+- `Merge`
+
+It also groups Conventional Commits into sections such as:
+
+- `Features` for `feat:`
+- `Bug Fixes` for `fix:`
+- `Performance` for `perf:`
+- `Refactors` for `refactor:`
+
+If you prefer to start releases from the GitHub Actions UI:
+
+1. Run the `cut-release` workflow
+2. Enter a version like `0.1.0`
+3. The workflow creates and pushes `v0.1.0` on the latest commit
+4. That tag push triggers the `release` workflow automatically
+
+The configuration follows GoReleaser's Homebrew tap support. GoReleaser's own docs note that its generated Homebrew formulas are meant for third-party taps rather than `homebrew/core`: [GoReleaser Homebrew Formulas](https://goreleaser.com/customization/homebrew_formulas/), [Homebrew Taps](https://docs.brew.sh/Taps)
+
 To use the CLI as `sagasu ...`, install it first:
 
 ```bash
@@ -101,7 +161,7 @@ go run ./cmd/sagasu index ./cmd ./internal
 By default the index is stored at:
 
 ```text
-.sagasu-index.sqlite
+~/.cache/sagasu/indexes/<name>-<hash>.sqlite
 ```
 
 You can override that with:
@@ -116,6 +176,12 @@ JSON summary output:
 go run ./cmd/sagasu index . --json
 ```
 
+If you want to search that repository later from another directory, pass its root:
+
+```bash
+sagasu search hello --root /path/to/repo
+```
+
 Rebuild the index from scratch:
 
 ```bash
@@ -128,6 +194,7 @@ Basic search:
 
 ```bash
 go run ./cmd/sagasu search sqlc
+sagasu search sqlc --root /path/to/repo
 ```
 
 Phrase search:
@@ -208,6 +275,12 @@ You can override the config path:
 go run ./cmd/sagasu index . --config /path/to/sagasu.json
 ```
 
+The same config path can be used with `rebuild`:
+
+```bash
+go run ./cmd/sagasu rebuild . --config /path/to/sagasu.json
+```
+
 ### Status / Info
 
 Show index metadata:
@@ -259,6 +332,8 @@ go run ./cmd/sagasu completion zsh
 go run ./cmd/sagasu completion fish
 go run ./cmd/sagasu completion powershell
 ```
+
+The release pipeline also packages bash, zsh, and fish completions so they can be installed through the Homebrew formula.
 
 ## Development Notes
 
